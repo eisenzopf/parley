@@ -1,0 +1,58 @@
+[package]
+name = "parley"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+description = "UCTP-speaking conversation server on rvoip voip-3 nouns"
+authors = ["Rudeless"]
+
+[features]
+default = ["sms-fake", "uctp"]
+sms-fake = []
+sms-telnyx = []
+sip = ["dep:rvoip-sip"]
+uctp = ["dep:rvoip-uctp", "dep:rvoip-websocket", "dep:rvoip-auth-core"]
+vapi = ["dep:rvoip-vapi"]
+media-webrtc = ["uctp", "rvoip-websocket/media-webrtc"]
+
+[dependencies]
+# Merge-base of rvoip parley/upstream: 68f9463183847098f0adfa363cbfe9d677795f94
+# Branch HEAD after UP-1–UP-3: f4532ddfe240d5cfe20d537304909f2e9e224ad7
+# Path pin until UP-1–UP-3 land on crates.io. Do not enable rvoip `app`.
+rvoip-core = { path = "../rvoip/crates/foundation/rvoip-core" }
+rvoip-sip = { path = "../rvoip/crates/sip/rvoip-sip", optional = true }
+rvoip-uctp = { path = "../rvoip/crates/uctp/rvoip-uctp", optional = true }
+rvoip-websocket = { path = "../rvoip/crates/uctp/rvoip-websocket", optional = true }
+rvoip-auth-core = { path = "../rvoip/crates/identity/auth-core", optional = true }
+rvoip-vapi = { path = "../rvoip/crates/extensions/rvoip-vapi", optional = true }
+
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+blake3 = "1"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+url = "2"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
+tokio-tungstenite = { version = "0.26", features = ["connect"] }
+futures-util = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[[test]]
+name = "talk_webrtc"
+required-features = ["media-webrtc"]

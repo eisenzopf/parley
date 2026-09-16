@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Parley</title>
+    <style>
+      body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
+      #log { white-space: pre-wrap; border: 1px solid #ddd; min-height: 12rem; padding: 1rem; }
+      button { margin-right: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Parley</h1>
+    <p>One Conversation. Buttons are Message, Talk, and End — not a call button.</p>
+    <div>
+      <button id="message">Message</button>
+      <button id="talk">Talk</button>
+      <button id="end">End</button>
+    </div>
+    <p><input id="draft" placeholder="Type a message" size="40" /></p>
+    <div id="log"></div>
+    <script type="module">
+      import { UctpClient, envelope } from "./src/uctp.ts";
+      const params = new URLSearchParams(location.search);
+      const token = params.get("token") || "";
+      const uctp = params.get("uctp") || `ws://${location.hostname}:7443`;
+      const log = document.getElementById("log");
+      const line = (m) => { log.textContent += m + "\n"; };
+      function readCookie(name) {
+        const prefix = name + "=";
+        return document.cookie.split(";").map((p) => p.trim()).find((p) => p.startsWith(prefix))?.slice(prefix.length) || "";
+      }
+      const visitor = params.get("visitor") || readCookie("parley_vid") || crypto.randomUUID();
+      document.cookie = `parley_vid=${visitor};path=/;max-age=31536000;SameSite=Lax`;
+      let cid = params.get("cid") || "";
+      let client = null;
+      let sid = null;
+      let pc = null;
+      async function ensureClient() {
+        if (client) return client;
+        client = new UctpClient(uctp, token);
+        await client.connect();
+        await client.auth();
+        const opened = client.waitType("conversation.opened");
+        client.send(envelope("conversation.create", {
+          tenant_id: "ten_local",
+          policy: "persistent",
+          metadata: { visitor_id: visitor, cookie: visitor },
+          initial_participants: [],
+        }, cid ? { cid } : {}));
+        const env = await opened;
+        cid = env.cid || cid;
+        line("conversation " + cid);
+        return client;
+      }
+      async function rest(method, path, body) {
+        const res = await fetch(path, {
+          method,
+          headers: {
+            authorization: "Bearer " + token,
+            "content-type": "application/json",
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        return { status: res.status, json: await res.json().catch(() => ({})) };
+      }
+      function waitIce(peer) {
+        if (peer.iceGatheringState === "complete") return Promise.resolve();
+        return new Promise((resolve) => {
+          peer.onicegatheringstatechange = () => {
+            if (peer.iceGatheringState === "complete") resolve();
+          };
+        });
+      }
+      document.getElementById("message").onclick = async () => {
+        const c = await ensureClient();
+        sid = sid || `sess_${crypto.randomUUID().replace(/-/g, "")}`;
+        c.send(envelope("session.invite", {
+          from: "part_widget",
+          to: ["part_ai"],
+          medium: "text",
+          intent: "message",
+          capabilities_offer: {},
+        }, { cid, sid }));
+        const body = document.getElementById("draft").value || "hello";
+        c.send(envelope("message.send", {
+          msg_id: `msg_${crypto.randomUUID().replace(/-/g, "")}`,
+          from: "part_widget",
+          to: "all",
+          content_type: "text/plain",
+          label: "rvoip-messages",
+          body,
+          body_encoding: "utf8",
+          attachments: [],
+        }, { cid, sid, connid: "conn_widget_text" }));
+        line("sent UCTP message.send");
+      };
+      document.getElementById("talk").onclick = async () => {
+        const c = await ensureClient();
+        const created = await rest("POST", `/v1/conversations/${cid}/sessions`, {
+          medium: "voice",
+          direction: "inbound",
+        });
+        if (created.status !== 200 || !created.json.id) {
+          line("Talk failed: voice session " + created.status);
+          return;
+        }
+        sid = created.json.id;
+        const connid = `conn_customer_${sid}`;
+        c.send(envelope("session.invite", {
+          from: "part_widget",
+          to: ["part_ai"],
+          medium: "voice",
+          intent: "talk",
+          capabilities_offer: {},
+        }, { cid, sid }));
+        pc = new RTCPeerConnection();
+        try {
+          const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          for (const track of media.getTracks()) pc.addTrack(track, media);
+        } catch (err) {
+          line("mic unavailable: " + err);
+        }
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitIce(pc);
+        const sdp = pc.localDescription && pc.localDescription.sdp;
+        if (!sdp) {
+          line("Talk failed: no local SDP");
+          return;
+        }
+        const answered = c.waitType("connection.answer");
+        c.send(envelope("connection.offer", {
+          by_participant: "part_widget",
+          substrate: "websocket+webrtc",
+          capabilities: {},
+          streams_offered: [{
+            id: "strm_audio",
+            kind: "audio",
+            direction: "send-recv",
+            codec_preferences: ["opus"],
+          }],
+          substrate_setup: { kind: "websocket+webrtc", sdp },
+        }, { cid, sid, connid }));
+        line("sent session.invite medium voice + connection.offer (UCTP substrate_setup, not a private offer/sdp JSON)");
+        const answer = await answered;
+        const setup = answer.payload && answer.payload.substrate_setup;
+        if (setup && setup.sdp) {
+          await pc.setRemoteDescription({ type: "answer", sdp: setup.sdp });
+          line("Talk connected; cid unchanged; customer connection " + connid);
+        } else {
+          line("no connection.answer SDP (server needs media-webrtc)");
+        }
+      };
+      document.getElementById("end").onclick = async () => {
+        if (!client || !sid) return;
+        client.send(envelope("session.end", { by: "part_widget", reason_code: 200, reason: "end" }, { cid, sid }));
+        if (pc) {
+          pc.close();
+          pc = null;
+        }
+        line("sent session.end");
+      };
+    </script>
+  </body>
+</html>

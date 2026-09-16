@@ -1,0 +1,8 @@
+/target
+parley.sqlite
+parley.sqlite-*
+*.sqlite
+*.sqlite-*
+/var
+.env
+.DS_Store

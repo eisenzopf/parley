@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Parley desk</title>
+    <style>
+      body { font-family: sans-serif; margin: 0; display: grid; grid-template-columns: 16rem 1fr; min-height: 100vh; }
+      nav { background: #111; color: #fff; padding: 1rem; }
+      main { padding: 1rem; }
+      .chip { display: inline-block; border: 1px solid #ccc; padding: 0.1rem 0.4rem; margin-right: 0.3rem; }
+      pre { background: #f6f6f6; padding: 1rem; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <h2>Parley</h2>
+      <p>Conversations</p>
+    </nav>
+    <main>
+      <h1>Conversations</h1>
+      <p>
+        <input id="bootstrap" placeholder="bootstrap token" />
+        <input id="email" placeholder="operator email" value="desk@parley.local" />
+        <button id="login">Login</button>
+        <button id="refresh">Refresh</button>
+        <button id="pickup">Pickup</button>
+        <button id="end">End</button>
+        <button id="close">Close</button>
+        <button id="vcon">Download vCon</button>
+      </p>
+      <p id="filters">Filters: live voice · waiting pickup · unread</p>
+      <pre id="out">Sign in with an operator session, then refresh.</pre>
+    </main>
+    <script type="module">
+      import { UctpClient, envelope } from "/widget/src/uctp.ts";
+      const params = new URLSearchParams(location.search);
+      let token = params.get("token") || "";
+      const uctp = params.get("uctp") || `ws://${location.hostname}:7443`;
+      const headers = () => token ? { authorization: "Bearer " + token } : {};
+      const out = document.getElementById("out");
+      let cid = null;
+      let uctpClient = null;
+      let pc = null;
+      async function load() {
+        const res = await fetch("/v1/conversations", { headers: headers() });
+        const data = await res.json();
+        const first = (data.conversations || [])[0];
+        cid = first && first.id;
+        out.textContent = JSON.stringify(data, null, 2);
+      }
+      function waitIce(peer) {
+        if (peer.iceGatheringState === "complete") return Promise.resolve();
+        return new Promise((resolve) => {
+          peer.onicegatheringstatechange = () => {
+            if (peer.iceGatheringState === "complete") resolve();
+          };
+        });
+      }
+      async function ensureUctp() {
+        if (uctpClient) return uctpClient;
+        uctpClient = new UctpClient(uctp, token);
+        await uctpClient.connect();
+        await uctpClient.auth();
+        return uctpClient;
+      }
+      document.getElementById("login").onclick = async () => {
+        const res = await fetch("/v1/operators/bootstrap", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            token: document.getElementById("bootstrap").value,
+            email: document.getElementById("email").value,
+          }),
+        });
+        const data = await res.json();
+        if (data.session_token) token = data.session_token;
+        out.textContent = JSON.stringify(data, null, 2);
+      };
+      document.getElementById("refresh").onclick = load;
+      document.getElementById("pickup").onclick = async () => {
+        if (!cid) return;
+        const res = await fetch(`/v1/conversations/${cid}/pickup/accept`, {
+          method: "POST",
+          headers: { ...headers(), "content-type": "application/json" },
+          body: "{}",
+        });
+        const pickup = await res.json();
+        out.textContent = JSON.stringify(pickup, null, 2);
+        const sid = pickup.session_id;
+        const connid = pickup.operator_connection_id || (sid ? `conn_operator_${sid}` : null);
+        if (!sid || !connid) return;
+        const c = await ensureUctp();
+        c.send(envelope("conversation.create", {
+          tenant_id: "ten_local",
+          policy: "persistent",
+          metadata: {},
+          initial_participants: [],
+        }, { cid }));
+        c.send(envelope("session.invite", {
+          from: pickup.operator_participant_id || "part_operator",
+          to: ["part_customer"],
+          medium: "voice",
+          intent: "pickup",
+          capabilities_offer: {},
+        }, { cid, sid }));
+        pc = new RTCPeerConnection();
+        try {
+          const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          for (const track of media.getTracks()) pc.addTrack(track, media);
+        } catch (err) {
+          out.textContent += "\nmic unavailable: " + err;
+        }
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitIce(pc);
+        const sdp = pc.localDescription && pc.localDescription.sdp;
+        const answered = c.waitType("connection.answer");
+        c.send(envelope("connection.offer", {
+          by_participant: pickup.operator_participant_id || "part_operator",
+          substrate: "websocket+webrtc",
+          capabilities: {},
+          streams_offered: [{
+            id: "strm_audio",
+            kind: "audio",
+            direction: "send-recv",
+            codec_preferences: ["opus"],
+          }],
+          substrate_setup: sdp ? { kind: "websocket+webrtc", sdp } : {},
+        }, { cid, sid, connid }));
+        try {
+          const answer = await answered;
+          const setup = answer.payload && answer.payload.substrate_setup;
+          if (setup && setup.sdp) {
+            await pc.setRemoteDescription({ type: "answer", sdp: setup.sdp });
+          }
+        } catch (err) {
+          out.textContent += "\noperator offer: " + err;
+        }
+      };
+      document.getElementById("close").onclick = async () => {
+        if (!cid) return;
+        const res = await fetch(`/v1/conversations/${cid}/close`, { method: "POST", headers: headers() });
+        out.textContent = await res.text();
+      };
+      document.getElementById("vcon").onclick = async () => {
+        if (!cid) return;
+        const res = await fetch(`/v1/conversations/${cid}/vcon`, { headers: headers() });
+        out.textContent = await res.text();
+      };
+      document.getElementById("end").onclick = async () => {
+        out.textContent = "End the live session from the conversation page.";
+      };
+    </script>
+  </body>
+</html>

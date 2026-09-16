@@ -1,0 +1,17 @@
+bind_http = "127.0.0.1:8080"
+bind_uctp_ws = "127.0.0.1:7443"
+bind_sip = "127.0.0.1:5060"
+sqlite_path = "parley.sqlite"
+blob_dir = "var/blobs"
+tenant_id = "ten_local"
+api_secret = "dev-only"
+operator_bootstrap_token = ""
+vapi_api_key = ""
+vapi_assistant_id = ""
+vapi_public_base = "http://127.0.0.1:8080"
+sip_advertise = ""
+reopen_window_secs = 604800
+max_voice_sessions_per_tenant = 16
+ai_stub = false
+vapi_chat_mode = "live"
+recording_consent = "This conversation may be recorded."

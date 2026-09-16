@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PARLEY_VAPI_CHAT: fake
+
+jobs:
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out Parley
+        uses: actions/checkout@v4
+        with:
+          path: parley
+
+      - name: Check out rvoip parley/upstream
+        uses: actions/checkout@v4
+        with:
+          repository: eisenzopf/rvoip
+          ref: parley/upstream
+          path: rvoip
+
+      - name: Install Rust 1.91.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+
+      - name: Run automated gates
+        working-directory: parley
+        run: bash scripts/ci.sh

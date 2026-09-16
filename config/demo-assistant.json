@@ -1,0 +1,17 @@
+{
+  "name": "assistant",
+  "model": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "messages": [
+      { "role": "system", "content": "You are the company's voice. One Conversation across phone, SMS, and chat." }
+    ]
+  },
+  "serverUrl": "http://127.0.0.1:8080/v1/vapi/tools",
+  "serverMessages": ["tool-calls"],
+  "tools": [
+    { "type": "function", "function": { "name": "request_human", "parameters": { "type": "object", "properties": { "conversation_id": { "type": "string" }, "session_id": { "type": "string" } } } } },
+    { "type": "function", "function": { "name": "send_message", "parameters": { "type": "object", "properties": { "conversation_id": { "type": "string" }, "body": { "type": "string" } } } } },
+    { "type": "function", "function": { "name": "close_session", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } } } } }
+  ]
+}
