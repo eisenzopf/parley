@@ -141,6 +141,15 @@ async fn rest_create_then_uctp_text_session_and_message() {
     let uctp_addr = app.start_uctp().await.expect("uctp");
     let router = app.router();
 
+    // An unrelated open Conversation must never capture this socket's data.
+    let (_, other) = json_request(
+        router.clone(),
+        "POST",
+        "/v1/conversations",
+        Some(json!({ "identity": { "visitor_id": "someone_else" } })),
+    )
+    .await;
+
     let (status, created) = json_request(
         router.clone(),
         "POST",
@@ -289,6 +298,37 @@ async fn rest_create_then_uctp_text_session_and_message() {
         }
     }
     assert!(found, "uctp message.send should persist as chat");
+    let (_, unrelated) = json_request(
+        router.clone(),
+        "GET",
+        &format!(
+            "/v1/conversations/{}/messages",
+            other["id"].as_str().unwrap()
+        ),
+        None,
+    )
+    .await;
+    assert!(unrelated["messages"].as_array().unwrap().is_empty());
+    let (_, actual) = json_request(
+        router.clone(),
+        "GET",
+        &format!("/v1/conversations/{cid}/messages"),
+        None,
+    )
+    .await;
+    let customer = created["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["role"] == "customer")
+        .unwrap();
+    let message = actual["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["body"] == "hello from uctp")
+        .unwrap();
+    assert_eq!(message["from_participant"], customer["id"]);
 
     let (_, sessions) = json_request(
         router,
@@ -366,13 +406,8 @@ async fn uctp_first_identity_reuses_sqlite_cid() {
     assert_eq!(opened_again.msg_type, MessageType::ConversationOpened);
     assert_eq!(opened_again.cid.as_deref(), Some(cid.as_str()));
 
-    let (status, conv) = json_request(
-        router,
-        "GET",
-        &format!("/v1/conversations/{cid}"),
-        None,
-    )
-    .await;
+    let (status, conv) =
+        json_request(router, "GET", &format!("/v1/conversations/{cid}"), None).await;
     assert_eq!(status, StatusCode::OK, "{conv}");
     assert_eq!(conv["id"], cid);
     assert_eq!(conv["match_kind"], "get");

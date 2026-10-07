@@ -37,11 +37,14 @@ pub struct ConversationView {
     pub participants: Vec<ParticipantRow>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct PostMessage {
     pub medium: String,
     pub sender_participant_id: Option<String>,
     pub body: String,
+    /// When true, persist only — do not send via the SMS provider (inbound).
+    #[serde(default)]
+    pub inbound: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -68,12 +71,20 @@ pub async fn create_or_continue(
         Match::Continue(cid) => {
             ensure_orchestrator_open(state, tenant_id, &cid).await?;
             state.store.touch_conversation(tenant_id, &cid)?;
+            crate::events::emit(
+                state,
+                tenant_id,
+                Some(&cid),
+                "conversation.continued",
+                json!({ "cid": cid }),
+            )?;
             view(state, tenant_id, &cid, "continue")
         }
         Match::Reopen(cid) => {
             state.store.reopen_conversation(tenant_id, &cid)?;
             reopen_orchestrator(state, tenant_id, &cid).await?;
-            state.store.insert_event(
+            crate::events::emit(
+                state,
                 tenant_id,
                 Some(&cid),
                 "conversation.continued",
@@ -150,7 +161,8 @@ async fn open_new(
         left_at: None,
     };
     state.store.insert_participant(&ai)?;
-    state.store.insert_event(
+    crate::events::emit(
+        state,
         tenant_id,
         Some(&row.id),
         "conversation.opened",
@@ -208,13 +220,25 @@ pub fn view(
 }
 
 pub async fn close(state: &AppState, tenant_id: &str, cid: &str) -> Result<ConversationView> {
+    if !state.store.conference_members(tenant_id, cid)?.is_empty() {
+        state.store.close_conference(
+            tenant_id,
+            cid,
+            "administrator",
+            "Closed through administrator API after local effects settled",
+            &format!("env_{}", Uuid::new_v4().simple()),
+        )?;
+        let _ = state
+            .orchestrator
+            .close_conversation(ConversationId::from_string(cid), false)
+            .await;
+        return view(state, tenant_id, cid, "closed");
+    }
     let id = ConversationId::from_string(cid.to_string());
-    let _ = state
-        .orchestrator
-        .close_conversation(id, true)
-        .await;
+    let _ = state.orchestrator.close_conversation(id, true).await;
     state.store.close_conversation(tenant_id, cid)?;
-    state.store.insert_event(
+    crate::events::emit(
+        state,
         tenant_id,
         Some(cid),
         "conversation.closed",
@@ -262,10 +286,11 @@ pub fn post_message(
     };
     state.store.insert_message(&row)?;
     state.store.touch_conversation(tenant_id, cid)?;
+    crate::events::publish(state, tenant_id, Some(cid), "message.posted");
     if let Some(key) = idempotency_key {
         state.store.idempotency_put(tenant_id, key, &row.id)?;
     }
-    if row.medium == "sms" {
+    if row.medium == "sms" && !req.inbound {
         crate::sms::send(state, tenant_id, cid, &row)?;
     }
     Ok(row)
@@ -345,7 +370,8 @@ pub fn persist_session(
     };
     state.store.insert_session(&row)?;
     state.store.touch_conversation(tenant_id, cid)?;
-    state.store.insert_event(
+    crate::events::emit(
+        state,
         tenant_id,
         Some(cid),
         "session.started",
@@ -380,12 +406,7 @@ async fn join_conversation_participants(
         };
         let _ = state
             .orchestrator
-            .join_session(
-                sid.clone(),
-                ParticipantId::from_string(p.id),
-                kind,
-                role,
-            )
+            .join_session(sid.clone(), ParticipantId::from_string(p.id), kind, role)
             .await;
     }
     Ok(())
@@ -420,7 +441,7 @@ fn ensure_customer_connection(
 }
 
 pub async fn end_session(state: &AppState, tenant_id: &str, sid: &str) -> Result<SessionRow> {
-    let _row = state
+    let row = state
         .store
         .get_session(tenant_id, sid)?
         .ok_or_else(|| ApiError::not_found("session not found"))?;
@@ -432,6 +453,13 @@ pub async fn end_session(state: &AppState, tenant_id: &str, sid: &str) -> Result
         )
         .await;
     state.store.end_session(tenant_id, sid)?;
+    crate::events::emit(
+        state,
+        tenant_id,
+        Some(&row.conversation_id),
+        "session.ended",
+        json!({ "sid": sid }),
+    )?;
     view_session(state, tenant_id, sid)
 }
 
@@ -506,4 +534,29 @@ pub fn timeline(state: &AppState, tenant_id: &str, cid: &str) -> Result<Timeline
 
 pub fn hours_open(config: &crate::config::Config) -> bool {
     crate::hours::is_open(config)
+}
+
+/// After-hours PSTN: persist a voicemail Message. No live voice Session, no AI pitch.
+pub fn leave_voicemail(state: &AppState, tenant_id: &str, cid: &str) -> Result<MessageRow> {
+    let row = MessageRow {
+        id: format!("msg_{}", Uuid::new_v4().simple()),
+        tenant_id: tenant_id.to_string(),
+        conversation_id: cid.to_string(),
+        from_participant: None,
+        medium: "audio".into(),
+        body: "Voicemail".into(),
+        provider_id: None,
+        state: "accepted".into(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.store.insert_message(&row)?;
+    state.store.touch_conversation(tenant_id, cid)?;
+    crate::events::emit(
+        state,
+        tenant_id,
+        Some(cid),
+        "message.received",
+        json!({ "id": row.id, "medium": "audio", "kind": "voicemail" }),
+    )?;
+    Ok(row)
 }

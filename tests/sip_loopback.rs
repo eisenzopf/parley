@@ -44,11 +44,59 @@ async fn sip_loopback_invite_continues_e164_and_busy_on_second_voice() {
     .await
     .expect("second invite");
     match second {
-        parley::sip::Admit::Busy { conversation_id: cid } => {
+        parley::sip::Admit::Busy {
+            conversation_id: cid,
+        } => {
             assert_eq!(cid, conversation_id);
         }
         other => panic!("expected busy, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn sip_invite_outside_hours_leaves_voicemail_message() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config::default();
+    cfg.sqlite_path = dir.path().join("parley.sqlite").display().to_string();
+    cfg.blob_dir = dir.path().join("blobs").display().to_string();
+    cfg.hours.windows = vec![parley::config::HoursWindow {
+        days: vec![],
+        start: "00:00".into(),
+        end: "00:00".into(),
+    }];
+    let store = Store::open(&cfg).expect("store");
+    let app = App::new(cfg, store).expect("app");
+    let admitted = admit_invite(
+        &app.state,
+        Invite {
+            cli_e164: "+14155550111".into(),
+            did: None,
+        },
+    )
+    .await
+    .expect("voicemail");
+    let parley::sip::Admit::Voicemail {
+        conversation_id,
+        message_id,
+    } = admitted
+    else {
+        panic!("expected voicemail {admitted:?}");
+    };
+    let messages = app
+        .state
+        .store
+        .list_messages("ten_local", &conversation_id)
+        .unwrap();
+    assert!(messages
+        .iter()
+        .any(|m| m.id == message_id && m.medium == "audio"));
+    assert_eq!(
+        app.state
+            .store
+            .count_live_voice_sessions("ten_local", &conversation_id)
+            .unwrap(),
+        0
+    );
 }
 
 #[cfg(feature = "sip")]

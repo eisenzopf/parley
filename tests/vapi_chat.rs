@@ -35,10 +35,8 @@ async fn fake_vapi_chat_persists_ai_reply() {
         .unwrap();
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let created: Value = serde_json::from_slice(
-        &response.into_body().collect().await.unwrap().to_bytes(),
-    )
-    .unwrap();
+    let created: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let cid = created["id"].as_str().unwrap();
     let reply = vapi_chat::complete(&app.state, &app.state.config.tenant_id, cid, "hours?")
         .await
@@ -52,6 +50,7 @@ async fn fake_vapi_chat_persists_ai_reply() {
             medium: "chat".into(),
             sender_participant_id: None,
             body: reply.text,
+            inbound: false,
         },
         None,
     )

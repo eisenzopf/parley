@@ -1,0 +1,32 @@
+[package]
+name = "vapi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "The official Rust SDK for accessing Vapi's API"
+repository = "https://github.com/VapiAI/server-sdk-rust"
+homepage = "https://docs.vapi.ai"
+documentation = "https://docs.rs/vapi"
+readme = "README.md"
+keywords = ["vapi", "voice-ai", "assistant", "chat"]
+categories = ["api-bindings", "web-programming::http-client"]
+authors = ["Vapi Labs Inc."]
+exclude = [".github"]
+
+[features]
+default = ["rustls"]
+rustls = ["reqwest/rustls-tls"]
+native-tls = ["reqwest/native-tls"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["time"] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

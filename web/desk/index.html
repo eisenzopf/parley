@@ -2,68 +2,346 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Parley desk</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
-      body { font-family: sans-serif; margin: 0; display: grid; grid-template-columns: 16rem 1fr; min-height: 100vh; }
-      nav { background: #111; color: #fff; padding: 1rem; }
-      main { padding: 1rem; }
-      .chip { display: inline-block; border: 1px solid #ccc; padding: 0.1rem 0.4rem; margin-right: 0.3rem; }
-      pre { background: #f6f6f6; padding: 1rem; overflow: auto; }
+      :root {
+        --ink: #f4efe6;
+        --muted: #b7b0a4;
+        --wood: #12100d;
+        --panel: #1b1814;
+        --line: #2c281f;
+        --olive: #9ec5b0;
+        --copper: #e08a62;
+        --paper: #f7f1e8;
+        --dark: #161410;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+        background: var(--wood);
+        color: var(--ink);
+      }
+      button, input { font: inherit; }
+      #gate {
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        background:
+          radial-gradient(800px 400px at 50% 0%, #2a241c 0%, transparent 60%),
+          var(--wood);
+      }
+      .card {
+        width: min(24rem, 100%);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 1.25rem;
+        padding: 1.6rem;
+      }
+      .card h1 {
+        font-family: Fraunces, Georgia, serif;
+        font-weight: 520;
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.03em;
+      }
+      .card p { color: var(--muted); margin: 0 0 1.2rem; line-height: 1.45; }
+      .card label { display: block; font-size: 0.82rem; color: var(--muted); margin: 0 0 0.35rem; }
+      .card input {
+        width: 100%;
+        margin: 0 0 0.9rem;
+        padding: 0.7rem 0.8rem;
+        border-radius: 0.7rem;
+        border: 1px solid var(--line);
+        background: #12100d;
+        color: var(--ink);
+      }
+      .card button, .act {
+        background: var(--paper);
+        color: var(--dark);
+        border: 0;
+        border-radius: 999px;
+        padding: 0.65rem 1rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #app { display: none; height: 100dvh; grid-template-columns: 22rem 1fr; }
+      body.in #gate { display: none; }
+      body.in #app { display: grid; }
+      aside {
+        border-right: 1px solid var(--line);
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+        min-height: 0;
+      }
+      .side-head, .filters, .thread-head, .actions {
+        padding: 1rem 1.1rem;
+      }
+      .side-head h2 {
+        font-family: Fraunces, Georgia, serif;
+        font-weight: 520;
+        margin: 0;
+      }
+      .filters { display: flex; flex-wrap: wrap; gap: 0.35rem; border-bottom: 1px solid var(--line); }
+      .filters button, .quiet {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.35rem 0.7rem;
+        cursor: pointer;
+      }
+      .filters button[aria-pressed="true"] { color: var(--ink); border-color: #5a6f63; background: #243028; }
+      #inbox { overflow: auto; }
+      .item {
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        color: inherit;
+        border: 0;
+        border-bottom: 1px solid var(--line);
+        padding: 0.95rem 1.1rem;
+        cursor: pointer;
+      }
+      .item:hover, .item.active { background: #221e18; }
+      .item .name { font-weight: 600; }
+      .item .preview { color: var(--muted); font-size: 0.88rem; margin-top: 0.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .badges { display: flex; gap: 0.3rem; margin-top: 0.45rem; flex-wrap: wrap; }
+      .badge { font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--olive); }
+      .badge.wait { color: var(--copper); }
+      main.thread-wrap {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-width: 0;
+        background: #14120f;
+      }
+      .thread-head { display: flex; justify-content: space-between; gap: 1rem; align-items: center; border-bottom: 1px solid var(--line); }
+      .thread-head h1 { font-size: 1.15rem; margin: 0; }
+      .thread-head p { margin: 0.2rem 0 0; color: var(--muted); font-size: 0.88rem; }
+      .actions { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+      .quiet { color: var(--ink); }
+      #thread {
+        overflow: auto;
+        padding: 1.2rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.7rem;
+      }
+      .bubble { max-width: 42rem; padding: 0.75rem 0.95rem; border-radius: 1rem; line-height: 1.4; white-space: pre-wrap; }
+      .bubble.them { align-self: flex-start; background: #241f18; }
+      .bubble.us { align-self: flex-end; background: #2a3b32; }
+      .placeholder { margin: auto; color: var(--muted); }
+      #out { display: none; }
     </style>
   </head>
   <body>
-    <nav>
-      <h2>Parley</h2>
-      <p>Conversations</p>
-    </nav>
-    <main>
-      <h1>Conversations</h1>
-      <p>
-        <input id="bootstrap" placeholder="bootstrap token" />
-        <input id="email" placeholder="operator email" value="desk@parley.local" />
-        <button id="login">Login</button>
-        <button id="refresh">Refresh</button>
-        <button id="pickup">Pickup</button>
-        <button id="end">End</button>
-        <button id="close">Close</button>
-        <button id="vcon">Download vCon</button>
-      </p>
-      <p id="filters">Filters: live voice · waiting pickup · unread</p>
-      <pre id="out">Sign in with an operator session, then refresh.</pre>
-    </main>
+    <section id="gate">
+      <form class="card" id="login-form">
+        <h1>Parley desk</h1>
+        <p>Sign in to see people who are writing, talking, or texting.</p>
+        <label for="bootstrap">Desk password</label>
+        <input id="bootstrap" type="password" autocomplete="current-password" />
+        <label for="email">Your email</label>
+        <input id="email" type="email" value="desk@parley.local" autocomplete="username" />
+        <button id="login" type="submit">Login</button>
+      </form>
+    </section>
+    <div id="app">
+      <aside>
+        <div class="side-head">
+          <h2>Inbox</h2>
+        </div>
+        <p id="filters" class="filters">
+          <button type="button" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" data-filter="live_voice">On voice</button>
+          <button type="button" data-filter="waiting_pickup">Waiting</button>
+          <button type="button" data-filter="unread">New texts</button>
+        </p>
+        <div id="inbox"></div>
+      </aside>
+      <main class="thread-wrap">
+        <header class="thread-head">
+          <div>
+            <h1 id="title">Select someone</h1>
+            <p id="subtitle">Conversations stay together across chat, voice, and SMS.</p>
+          </div>
+          <button class="quiet" id="refresh" type="button">Refresh</button>
+        </header>
+        <div id="thread"><p class="placeholder">Pick a conversation from the left.</p></div>
+        <div class="actions">
+          <button class="act" id="pickup" type="button">Join voice</button>
+          <button class="quiet" id="end" type="button">Leave voice</button>
+          <button class="quiet" id="close" type="button">Close</button>
+          <button class="quiet" id="vcon" type="button">Download copy</button>
+        </div>
+      </main>
+    </div>
+    <pre id="out"></pre>
     <script type="module">
-      import { UctpClient, envelope } from "/widget/src/uctp.ts";
       const params = new URLSearchParams(location.search);
       let token = params.get("token") || "";
-      const uctp = params.get("uctp") || `ws://${location.hostname}:7443`;
-      const headers = () => token ? { authorization: "Bearer " + token } : {};
+      const pub = await fetch("/v1/public").then((r) => r.json()).catch(() => ({}));
+      const uctp = params.get("uctp") || pub.uctp_ws_url || `ws://${location.hostname}:7443`;
       const out = document.getElementById("out");
+      const inbox = document.getElementById("inbox");
+      const thread = document.getElementById("thread");
       let cid = null;
+      let rows = [];
       let uctpClient = null;
       let pc = null;
+      let envelope = null;
+      let ipv4OnlySdp = null;
+      async function loadUctp() {
+        const mod = await import("/widget/uctp.js?v=3");
+        envelope = mod.envelope;
+        ipv4OnlySdp = mod.ipv4OnlySdp;
+        return mod;
+      }
+      let inboxFilter = "all";
+      const aiIds = new Set();
+      const headers = () => token ? { authorization: "Bearer " + token } : {};
+      let live = null;
+      let liveTimer = null;
+      const LIVE_EVENTS = [
+        "conversation.opened",
+        "conversation.continued",
+        "conversation.closed",
+        "message.posted",
+        "message.sent",
+        "message.failed",
+        "message.received",
+        "session.started",
+        "session.ended",
+        "pickup.requested",
+        "pickup.accepted",
+        "participant.role_changed",
+        "recording.consented",
+        "resync",
+      ];
+      function listenLive() {
+        if (!token) return;
+        if (live) live.close();
+        live = new EventSource("/v1/events?access_token=" + encodeURIComponent(token));
+        const kick = () => {
+          clearTimeout(liveTimer);
+          liveTimer = setTimeout(load, 40);
+        };
+        LIVE_EVENTS.forEach((name) => live.addEventListener(name, kick));
+      }
+      function prettyName(value) {
+        const raw = String(value || "Someone");
+        const digits = raw.replace(/\D/g, "");
+        if (digits.length === 11 && digits.startsWith("1")) {
+          return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`;
+        }
+        if (/^[0-9a-f-]{16,}$/i.test(raw)) return "Web visitor";
+        return raw;
+      }
+      function esc(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+      function when(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return "";
+        return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      }
+      function badge(row) {
+        const bits = [];
+        if (row.live_voice) bits.push(`<span class="badge">On voice</span>`);
+        if (row.waiting_pickup) bits.push(`<span class="badge wait">Waiting for you</span>`);
+        if (row.unread) bits.push(`<span class="badge">New text</span>`);
+        return bits.join("");
+      }
       async function load() {
         const res = await fetch("/v1/conversations", { headers: headers() });
-        const data = await res.json();
-        const first = (data.conversations || [])[0];
-        cid = first && first.id;
-        out.textContent = JSON.stringify(data, null, 2);
+        const data = await res.json().catch(() => ({}));
+        rows = data.conversations || [];
+        let shown = rows;
+        if (inboxFilter === "live_voice") shown = rows.filter((r) => r.live_voice);
+        if (inboxFilter === "waiting_pickup") shown = rows.filter((r) => r.waiting_pickup);
+        if (inboxFilter === "unread") shown = rows.filter((r) => r.unread);
+        inbox.innerHTML = shown.map((row) => `
+          <button type="button" class="item ${row.id === cid ? "active" : ""}" data-id="${esc(row.id)}">
+            <div class="name">${esc(prettyName(row.title))}</div>
+            <div class="preview">${esc(row.preview || "No messages yet")}</div>
+            <div class="badges">${badge(row)}${row.last_activity_at ? `<span class="badge">${esc(when(row.last_activity_at))}</span>` : ""}</div>
+          </button>
+        `).join("") || `<p class="placeholder" style="padding:1rem">Nothing here yet.</p>`;
+        inbox.querySelectorAll(".item").forEach((btn) => {
+          btn.onclick = () => openConversation(btn.getAttribute("data-id"));
+        });
+        if (cid) openConversation(cid);
       }
+      async function openConversation(id) {
+        cid = id;
+        const row = rows.find((r) => r.id === id) || {};
+        document.getElementById("title").textContent = prettyName(row.title);
+        document.getElementById("subtitle").textContent = row.live_voice
+          ? "They’re on voice right now."
+          : row.waiting_pickup
+            ? "They asked for a person."
+            : "Chat, voice, and texts stay in this thread.";
+        inbox.querySelectorAll(".item").forEach((btn) => btn.classList.toggle("active", btn.getAttribute("data-id") === id));
+        const [people, msgs] = await Promise.all([
+          fetch(`/v1/conversations/${id}/participants`, { headers: headers() }).then((r) => r.json()).catch(() => ({})),
+          fetch(`/v1/conversations/${id}/messages`, { headers: headers() }).then((r) => r.json()).catch(() => ({})),
+        ]);
+        aiIds.clear();
+        for (const p of people.participants || []) {
+          if (p.kind === "ai") aiIds.add(p.id);
+        }
+        const messages = msgs.messages || [];
+        thread.innerHTML = messages.length
+          ? messages.map((m) => {
+              const mine = m.from_participant && aiIds.has(m.from_participant) ? "us" : "them";
+              const who = mine === "us" ? "Parley" : prettyName(row.title);
+              const failed = m.medium === "sms" && String(m.state || "").includes("fail");
+              const failNote = failed
+                ? `<div style="margin-top:.35rem;font-size:.75rem;opacity:.75">Text didn’t reach their phone. Carriers rejected it because this number isn’t 10DLC-registered.</div>`
+                : "";
+              return `<div class="bubble ${mine}"><strong style="display:block;font-size:0.75rem;opacity:.7;margin-bottom:.2rem">${esc(who)}</strong>${esc(m.body || "")}${failNote}</div>`;
+            }).join("")
+          : `<p class="placeholder">No messages yet.</p>`;
+        thread.scrollTop = thread.scrollHeight;
+      }
+      document.querySelectorAll("#filters button").forEach((btn) => {
+        btn.onclick = () => {
+          inboxFilter = btn.getAttribute("data-filter") || "all";
+          document.querySelectorAll("#filters button").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+          load();
+        };
+      });
       function waitIce(peer) {
         if (peer.iceGatheringState === "complete") return Promise.resolve();
         return new Promise((resolve) => {
+          const timer = setTimeout(resolve, 2500);
           peer.onicegatheringstatechange = () => {
-            if (peer.iceGatheringState === "complete") resolve();
+            if (peer.iceGatheringState === "complete") {
+              clearTimeout(timer);
+              resolve();
+            }
           };
         });
       }
       async function ensureUctp() {
         if (uctpClient) return uctpClient;
+        const { UctpClient } = await loadUctp();
         uctpClient = new UctpClient(uctp, token);
         await uctpClient.connect();
         await uctpClient.auth();
         return uctpClient;
       }
-      document.getElementById("login").onclick = async () => {
+      document.getElementById("login-form").onsubmit = async (event) => {
+        event.preventDefault();
         const res = await fetch("/v1/operators/bootstrap", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -73,82 +351,116 @@
           }),
         });
         const data = await res.json();
-        if (data.session_token) token = data.session_token;
-        out.textContent = JSON.stringify(data, null, 2);
+        if (data.session_token) {
+          token = data.session_token;
+          out.textContent = JSON.stringify(data);
+          document.body.classList.add("in");
+          load();
+          listenLive();
+        } else {
+          alert("That password didn’t work.");
+        }
       };
       document.getElementById("refresh").onclick = load;
       document.getElementById("pickup").onclick = async () => {
-        if (!cid) return;
-        const res = await fetch(`/v1/conversations/${cid}/pickup/accept`, {
-          method: "POST",
-          headers: { ...headers(), "content-type": "application/json" },
-          body: "{}",
-        });
-        const pickup = await res.json();
-        out.textContent = JSON.stringify(pickup, null, 2);
-        const sid = pickup.session_id;
-        const connid = pickup.operator_connection_id || (sid ? `conn_operator_${sid}` : null);
-        if (!sid || !connid) return;
-        const c = await ensureUctp();
-        c.send(envelope("conversation.create", {
-          tenant_id: "ten_local",
-          policy: "persistent",
-          metadata: {},
-          initial_participants: [],
-        }, { cid }));
-        c.send(envelope("session.invite", {
-          from: pickup.operator_participant_id || "part_operator",
-          to: ["part_customer"],
-          medium: "voice",
-          intent: "pickup",
-          capabilities_offer: {},
-        }, { cid, sid }));
-        pc = new RTCPeerConnection();
-        try {
-          const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-          for (const track of media.getTracks()) pc.addTrack(track, media);
-        } catch (err) {
-          out.textContent += "\nmic unavailable: " + err;
+        if (!cid) {
+          alert("Pick someone in the inbox first.");
+          return;
         }
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await waitIce(pc);
-        const sdp = pc.localDescription && pc.localDescription.sdp;
-        const answered = c.waitType("connection.answer");
-        c.send(envelope("connection.offer", {
-          by_participant: pickup.operator_participant_id || "part_operator",
-          substrate: "websocket+webrtc",
-          capabilities: {},
-          streams_offered: [{
-            id: "strm_audio",
-            kind: "audio",
-            direction: "send-recv",
-            codec_preferences: ["opus"],
-          }],
-          substrate_setup: sdp ? { kind: "websocket+webrtc", sdp } : {},
-        }, { cid, sid, connid }));
         try {
+          const res = await fetch(`/v1/conversations/${cid}/pickup/accept`, {
+            method: "POST",
+            headers: { ...headers(), "content-type": "application/json" },
+            body: "{}",
+          });
+          const pickup = await res.json();
+          if (!res.ok) {
+            alert("There’s no live voice to join yet. On the widget, click Talk first.");
+            return;
+          }
+          const sid = pickup.session_id;
+          const connid = pickup.operator_connection_id || (sid ? `conn_operator_${sid}` : null);
+          if (!sid || !connid) {
+            alert("Pickup didn’t return a voice session.");
+            return;
+          }
+          const c = await ensureUctp();
+          c.send(envelope("conversation.create", {
+            tenant_id: "ten_local",
+            policy: "persistent",
+            metadata: {},
+            initial_participants: [],
+          }, { cid }));
+          c.send(envelope("session.invite", {
+            from: pickup.operator_participant_id || "part_operator",
+            to: ["part_customer"],
+            medium: "voice",
+            intent: "pickup",
+            capabilities_offer: {},
+          }, { cid, sid }));
+          pc = new RTCPeerConnection();
+          try {
+            const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            for (const track of media.getTracks()) pc.addTrack(track, media);
+          } catch (_) {
+            alert("Allow the microphone to join voice.");
+            return;
+          }
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await waitIce(pc);
+          const sdp = ipv4OnlySdp(pc.localDescription && pc.localDescription.sdp);
+          const answered = c.waitType("connection.answer");
+          c.send(envelope("connection.offer", {
+            by_participant: pickup.operator_participant_id || "part_operator",
+            substrate: "websocket+webrtc",
+            capabilities: {},
+            streams_offered: [{
+              id: "strm_audio",
+              kind: "audio",
+              direction: "send-recv",
+              codec_preferences: ["opus"],
+            }],
+            substrate_setup: sdp ? { kind: "websocket+webrtc", sdp } : {},
+          }, { cid, sid, connid }));
           const answer = await answered;
           const setup = answer.payload && answer.payload.substrate_setup;
           if (setup && setup.sdp) {
-            await pc.setRemoteDescription({ type: "answer", sdp: setup.sdp });
+            await pc.setRemoteDescription({ type: "answer", sdp: ipv4OnlySdp(setup.sdp) });
+            document.getElementById("subtitle").textContent = "You’re on voice with them.";
+          } else {
+            alert("Voice answered without audio. Try Talk again on the widget, then Join voice.");
           }
         } catch (err) {
-          out.textContent += "\noperator offer: " + err;
+          alert("Couldn’t join voice. Make sure the widget is still on Talk, then try again.");
         }
       };
       document.getElementById("close").onclick = async () => {
         if (!cid) return;
-        const res = await fetch(`/v1/conversations/${cid}/close`, { method: "POST", headers: headers() });
-        out.textContent = await res.text();
+        await fetch(`/v1/conversations/${cid}/close`, { method: "POST", headers: headers() });
+        document.getElementById("subtitle").textContent = "This conversation is closed.";
+        load();
       };
       document.getElementById("vcon").onclick = async () => {
         if (!cid) return;
         const res = await fetch(`/v1/conversations/${cid}/vcon`, { headers: headers() });
-        out.textContent = await res.text();
+        const blob = new Blob([await res.text()], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "conversation.json";
+        a.click();
+        URL.revokeObjectURL(url);
       };
       document.getElementById("end").onclick = async () => {
-        out.textContent = "End the live session from the conversation page.";
+        if (pc) {
+          pc.close();
+          pc = null;
+        }
+        if (cid) {
+          await fetch(`/v1/conversations/${cid}/return_to_ai`, { method: "POST", headers: headers() }).catch(() => {});
+        }
+        document.getElementById("subtitle").textContent = "You left voice. Parley can keep talking.";
       };
     </script>
   </body>

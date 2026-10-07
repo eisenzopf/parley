@@ -1,5 +1,7 @@
 # PRD — Parley
 
+> **Conference addendum (October 5, 2026):** `CONFERENCE_DEMO_PLAN.md` defines the accepted October 13–15 showcase. It adds an external Vapi assistant worker, explicit multi-person messaging through Telnyx, and UCTP communications control for the worker and browser. These requirements extend the original single-process/two-party v1 scope below. Legacy entry points remain supported. Sandbox travel decisions and live communications are labeled separately.
+
 **Status:** Draft for review
 **Date:** 2026-09-15
 **Product:** Parley

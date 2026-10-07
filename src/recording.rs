@@ -36,7 +36,8 @@ pub fn on_voice_session_started(
         .iter()
         .any(|e| e.event_type == "recording.consented");
     if !already {
-        state.store.insert_event(
+        crate::events::emit(
+            state,
             tenant_id,
             Some(cid),
             "recording.consented",

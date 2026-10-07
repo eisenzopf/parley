@@ -3,12 +3,12 @@ use crate::error::{ApiError, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Mutex;
 use uuid::Uuid;
 
 pub struct Store {
-    conn: Mutex<Connection>,
+    pub(super) conn: Mutex<Connection>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,6 +105,13 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(include_str!("../../migrations/001_init.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/002_conference.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/003_conference_voice.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/004_conference_browser.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/005_conference_evidence.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/006_conference_receipts.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/007_conference_inbox.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/008_conference_phone.sql"))?;
         let store = Self {
             conn: Mutex::new(conn),
         };
@@ -148,6 +155,25 @@ impl Store {
         )
         .optional()
         .map_err(Into::into)
+    }
+
+    pub fn tenant_config(&self, tenant_id: &str) -> Result<Value> {
+        let conn = self.conn.lock().expect("store lock");
+        let raw: String = conn.query_row(
+            "SELECT config FROM tenants WHERE id = ?1",
+            params![tenant_id],
+            |r| r.get(0),
+        )?;
+        Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!({})))
+    }
+
+    pub fn set_tenant_config(&self, tenant_id: &str, config: &Value) -> Result<()> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "UPDATE tenants SET config = ?2 WHERE id = ?1",
+            params![tenant_id, config.to_string()],
+        )?;
+        Ok(())
     }
 
     pub fn lookup_identity(
@@ -279,12 +305,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn set_vapi_chat_session(
-        &self,
-        tenant_id: &str,
-        id: &str,
-        session_id: &str,
-    ) -> Result<()> {
+    pub fn set_vapi_chat_session(&self, tenant_id: &str, id: &str, session_id: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
             "UPDATE conversations SET vapi_chat_session_id = ?3 WHERE tenant_id = ?1 AND id = ?2",
@@ -452,7 +473,11 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_connections(&self, tenant_id: &str, session_id: &str) -> Result<Vec<ConnectionRow>> {
+    pub fn list_connections(
+        &self,
+        tenant_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<ConnectionRow>> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(
             "SELECT id, tenant_id, session_id, participant_id, transport, state
@@ -515,6 +540,38 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn set_message_delivery(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        provider_id: Option<&str>,
+        state: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "UPDATE messages SET provider_id = COALESCE(?3, provider_id), state = ?4
+             WHERE tenant_id = ?1 AND id = ?2",
+            params![tenant_id, id, provider_id, state],
+        )?;
+        Ok(())
+    }
+
+    pub fn find_message_by_provider(
+        &self,
+        tenant_id: &str,
+        provider_id: &str,
+    ) -> Result<Option<MessageRow>> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.query_row(
+            "SELECT id, tenant_id, conversation_id, from_participant, medium, body, provider_id, state, created_at
+             FROM messages WHERE tenant_id = ?1 AND provider_id = ?2",
+            params![tenant_id, provider_id],
+            map_message,
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     pub fn get_message(&self, tenant_id: &str, id: &str) -> Result<Option<MessageRow>> {
@@ -644,6 +701,17 @@ impl Store {
         Ok(id)
     }
 
+    pub fn find_operator_by_email(&self, tenant_id: &str, email: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.query_row(
+            "SELECT id FROM operators WHERE tenant_id = ?1 AND email = ?2",
+            params![tenant_id, email],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub fn insert_operator_session(
         &self,
         tenant_id: &str,
@@ -759,7 +827,7 @@ fn map_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConnectionRow> {
     })
 }
 
-fn map_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
+pub(super) fn map_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
         id: r.get(0)?,
         tenant_id: r.get(1)?,

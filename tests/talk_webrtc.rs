@@ -25,7 +25,7 @@ use tower::ServiceExt;
 use url::Url;
 
 fn install_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    parley::tls::ensure_rustls_ring();
 }
 
 fn test_config(dir: &std::path::Path) -> Config {
@@ -310,13 +310,8 @@ async fn talk_same_cid_connection_offer_webrtc() {
         "customer connection id must stay {connid}: {listed}"
     );
 
-    let (status, conv) = json_request(
-        router,
-        "GET",
-        &format!("/v1/conversations/{cid}"),
-        None,
-    )
-    .await;
+    let (status, conv) =
+        json_request(router, "GET", &format!("/v1/conversations/{cid}"), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(conv["id"], cid);
 }

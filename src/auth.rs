@@ -8,8 +8,13 @@ use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub enum Actor {
     ApiSecret,
-    Widget { visitor_id: Option<String>, origin: Option<String> },
-    Operator { operator_id: String },
+    Widget {
+        visitor_id: Option<String>,
+        origin: Option<String>,
+    },
+    Operator {
+        operator_id: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -26,7 +31,11 @@ struct WidgetClaims {
     exp: i64,
 }
 
-pub fn authenticate(store: &Store, config: &Config, authorization: Option<&str>) -> Result<AuthContext> {
+pub fn authenticate(
+    store: &Store,
+    config: &Config,
+    authorization: Option<&str>,
+) -> Result<AuthContext> {
     let token = authorization
         .and_then(|h| h.strip_prefix("Bearer "))
         .or(authorization)
@@ -34,9 +43,7 @@ pub fn authenticate(store: &Store, config: &Config, authorization: Option<&str>)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
 
-    if token == config.api_secret
-        || hash_secret(token) == config.hash_api_secret()
-    {
+    if token == config.api_secret || hash_secret(token) == config.hash_api_secret() {
         return Ok(AuthContext {
             tenant_id: config.tenant_id.clone(),
             actor: Actor::ApiSecret,
@@ -87,7 +94,8 @@ fn decode_widget_token(config: &Config, token: &str) -> Result<Option<AuthContex
     if expected != mac {
         return Err(ApiError::unauthorized("invalid widget token"));
     }
-    let bytes = hex_decode(payload_hex).ok_or_else(|| ApiError::unauthorized("invalid widget token"))?;
+    let bytes =
+        hex_decode(payload_hex).ok_or_else(|| ApiError::unauthorized("invalid widget token"))?;
     let claims: WidgetClaims = serde_json::from_slice(&bytes)
         .map_err(|_| ApiError::unauthorized("invalid widget token"))?;
     if claims.exp < Utc::now().timestamp() {
@@ -130,10 +138,10 @@ pub fn bootstrap_operator(
     if config.operator_bootstrap_token.is_empty() || token != config.operator_bootstrap_token {
         return Err(ApiError::unauthorized("invalid bootstrap token"));
     }
-    if store.operator_count(&config.tenant_id)? > 0 {
-        return Err(ApiError::conflict("operators already exist"));
-    }
-    let operator_id = store.insert_operator(&config.tenant_id, email)?;
+    let operator_id = match store.find_operator_by_email(&config.tenant_id, email)? {
+        Some(id) => id,
+        None => store.insert_operator(&config.tenant_id, email)?,
+    };
     let session = format!("ops_{}", Uuid::new_v4().simple());
     store.insert_operator_session(
         &config.tenant_id,

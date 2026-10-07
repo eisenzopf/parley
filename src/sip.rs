@@ -2,7 +2,9 @@
 //! match and the one-live-voice-session rule are product code here.
 
 use crate::conversation::{self, PostSession};
-use crate::error::{ApiError, Result};
+#[cfg(feature = "sip")]
+use crate::error::ApiError;
+use crate::error::Result;
 use crate::identity::IngressKeys;
 use crate::runtime::AppState;
 use chrono::Utc;
@@ -26,6 +28,10 @@ pub enum Admit {
     },
     Closed {
         conversation_id: String,
+    },
+    Voicemail {
+        conversation_id: String,
+        message_id: String,
     },
 }
 
@@ -91,11 +97,7 @@ pub async fn admit_invite(state: &AppState, invite: Invite) -> Result<Admit> {
             conversation_id: created.id,
         });
     }
-    if state
-        .store
-        .count_live_voice_sessions(tenant, &created.id)?
-        > 0
-    {
+    if state.store.count_live_voice_sessions(tenant, &created.id)? > 0 {
         let _ = crate::sms::send(
             state,
             tenant,
@@ -116,13 +118,16 @@ pub async fn admit_invite(state: &AppState, invite: Invite) -> Result<Admit> {
             conversation_id: created.id,
         });
     }
-    if !crate::hours::is_open(&state.config) {
-        return Err(ApiError::new(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "hours-closed",
-            "Closed",
-            "outside hours; voicemail not attached in this build",
-        ));
+    let open = {
+        let hours = state.hours.lock().expect("hours");
+        crate::hours::is_open_config(&hours, Utc::now())
+    };
+    if !open {
+        let msg = conversation::leave_voicemail(state, tenant, &created.id)?;
+        return Ok(Admit::Voicemail {
+            conversation_id: created.id,
+            message_id: msg.id,
+        });
     }
     let session = conversation::start_session(
         state,
@@ -211,15 +216,7 @@ async fn handle_incoming_invite(
         return Err(ApiError::bad_request("sip invite had no parseable CLI"));
     };
     let did = parse_cli_from_sip(&to);
-    match admit_invite(
-        state,
-        Invite {
-            cli_e164: cli,
-            did,
-        },
-    )
-    .await
-    {
+    match admit_invite(state, Invite { cli_e164: cli, did }).await {
         Err(err) => {
             let _ = incoming.reject(500, "Server Error").await;
             Err(err)
@@ -251,7 +248,7 @@ async fn handle_incoming_invite(
                     cid = %conversation_id,
                     ai = %ids.ai_participant_id,
                     customer = %ids.customer_participant_id,
-                    "sip voice session ready (fake attach: distinct ai participant)"
+                    "sip voice session ready; vapi attaches on orchestrator WebRTC Talk"
                 );
             }
             let ended = state.clone();
@@ -269,6 +266,10 @@ async fn handle_incoming_invite(
         }
         Ok(Admit::Closed { .. }) => {
             let _ = incoming.decline().await;
+            Ok(())
+        }
+        Ok(Admit::Voicemail { .. }) => {
+            let _ = incoming.reject(480, "Temporarily Unavailable").await;
             Ok(())
         }
     }

@@ -16,6 +16,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   PARLEY_VAPI_CHAT: fake
+  PARLEY_TUNNEL: "0"
+  PARLEY_PROVISION: "0"
 
 jobs:
   test:
@@ -28,17 +30,26 @@ jobs:
         with:
           path: parley
 
-      - name: Check out rvoip parley/upstream
+      - name: Check out rvoip 0.3.12 baseline
         uses: actions/checkout@v4
         with:
           repository: eisenzopf/rvoip
-          ref: parley/upstream
-          path: rvoip
+          ref: ca7861af4c9920f6949422ae1f40507bf56ede97
+          path: rvoip-conference
+
+      - name: Apply local UCTP conference patches
+        working-directory: parley
+        run: bash scripts/setup-rvoip.sh
 
       - name: Install Rust 1.91.0
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91.0
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - name: Run automated gates
         working-directory: parley

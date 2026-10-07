@@ -14,10 +14,9 @@ pub async fn create(
     Path(cid): Path<String>,
     Json(body): Json<PostMessage>,
 ) -> Result<Json<Value>, ApiError> {
-    let idem = headers
-        .get("idempotency-key")
-        .and_then(|v| v.to_str().ok());
+    let idem = headers.get("idempotency-key").and_then(|v| v.to_str().ok());
     let row = conversation::post_message(&state, &auth.tenant_id, &cid, body, idem)?;
+    crate::vapi_chat::reply_after(&state, &row).await;
     Ok(Json(serde_json::to_value(row).unwrap_or(json!({}))))
 }
 

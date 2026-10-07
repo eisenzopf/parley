@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "sandbox": true,
+  "task": "My flight from Reno to Atlanta was canceled. Please ask the travel booker whether the reservations for Alex and me can be changed to a replacement flight with two seats. Aim to depart around 11 AM and arrive by 4 PM. This is a sandbox change only, with no real purchase. Then call the conference organizer directly to confirm pickup using the booker's actual answer. Bring me into that same call from my browser so I can move to my phone. Leave the call open until I end it, then ask me to approve the final sandbox arrangements. SMS is deferred until campaign approval; do not send any texts.",
+  "alternative": { "flight": "RD742", "departure": "11:00", "arrival": "16:00", "terminal": "C", "travelers": 2 },
+  "booker_transcript": "Sandbox option: two seats on RD742 out of Reno at 11:00, arriving in Atlanta at terminal C at 16:00. No real booking has been made.",
+  "organizer_transcript": "I can arrange pickup for Jonathan and Alex at terminal C at 16:00. Bring Jonathan into this call to confirm.",
+  "proposal": "Sandbox arrangements: Jonathan and Alex take RD742 from Reno at 11:00, arriving in Atlanta at terminal C at 16:00. The organizer confirmed pickup. No real travel purchase has been made.",
+  "booker_speech": "I can get them both on the eleven A M flight out of Reno, into Atlanta by four P M. Does that work? The flight number is R D seven four two, arriving at terminal C, with two seats for Jonathan and Alex. This is a sandbox offer only. No real booking has been made. Those are all the itinerary details. Thank you, goodbye.",
+  "organizer_speech": "Yes. I can arrange pickup for Jonathan and Alex at terminal C at four P M. Please bring Jonathan into this call to confirm the pickup."
+}

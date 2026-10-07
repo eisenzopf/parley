@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "rvoip": {
+    "version": "0.3.12",
+    "revision": "ca7861af4c9920f6949422ae1f40507bf56ede97",
+    "patch_sha256": "099977f2a66f99987f91779d04727e523ecff6662d8a9b672cf7f82a94186033",
+    "files": {
+      "crates/extensions/rvoip-vapi/src/adapter.rs": "abefabae2f875f763deea9129f089f49b4405338312ae634602e37bcf5b5a195",
+      "crates/media/rtp-core/src/session/mod.rs": "05ae385c4b49d2a5906c1ea632129176988ccac514be72f870d667db700dc2c9",
+      "crates/sip/rvoip-sip/src/adapters/media_adapter.rs": "cef0e74c213421d6f4c15e2f9fb4c12313cdd3f7fe6eaf3df0c90aa32046b13f",
+      "crates/sip/rvoip-sip/src/api/unified.rs": "a2a931350169e9d05e64dd6175cd2e196895a6377e49aecd6bb1470609e2f040",
+      "crates/uctp/rvoip-uctp/src/application.rs": "7657bfdfc02fc552eadd73a9147bc5a5e5d0223dff0aaf2a3097b751a5450a45",
+      "crates/uctp/rvoip-uctp/src/lib.rs": "745c94fa8e146711df6d49af5e3457ab515fea87a14e75f67ab6a004a791d5ca",
+      "crates/uctp/rvoip-uctp/src/state/coordinator.rs": "34cdfe1ee354083fceb9c580cbee213f68c2b72395e2cae3f753afcfcce58589",
+      "crates/uctp/rvoip-websocket/src/adapter.rs": "2926d9dedf3c6b9c665f60e02ed70d73e77bda89371a135680c5933a0a0ddb8f",
+      "crates/uctp/rvoip-websocket/src/server.rs": "643947faadc8366cab0fa33b1264e0720a84b35fe77dd58f0618147a1ab65e28"
+    }
+  },
+  "vapi": {
+    "version": "0.1.0",
+    "source_revision": "02d61a635e3d40bbdb9ba64aad5515fc8b41d4be",
+    "files": {
+      "Cargo.toml": "2abcbde251990b1e8b7e3c8e69a331b0eefca9a8f61d6bf61e35141bf568e12a",
+      "LICENSE": "c859f17e8775fdac7eb19f962bf906e4b53d692be280fd2c99ec1c41c5bbab92",
+      "src/client.rs": "0615c97dba4b5787a5d317ad932f31ac7eeacec566d0cbf6163abad9f2db8344",
+      "src/environments.rs": "a98f0bc0a2aca83af4ed95b220471421e5f459ae1a9577b05fdeccacfbf0f8b2",
+      "src/error.rs": "314758b41e493f99920f1ca05fb0c493fb031674b6f3cbeb0b7c4c135aee899b",
+      "src/lib.rs": "0d97ea82605aeb8d94e8cebefc96d7d3d7ec8a36506dc9b9e7ec9eb4bc1c36c4",
+      "src/list.rs": "7d644843b07d74477ec3097d08527578b2cc59928ebfc922f31543491e337fd5",
+      "src/types.rs": "f5ea389e8eeb75292dc571c7ec3c87041c5a58ca5777c22cbc6eb770043cf7e8"
+    }
+  }
+}

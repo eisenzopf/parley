@@ -1,0 +1,5 @@
+{
+  "name": "@rvoip/uctp-conference-client",
+  "private": true,
+  "type": "module"
+}

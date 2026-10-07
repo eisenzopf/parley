@@ -2,30 +2,284 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="/widget/" />
     <title>Parley</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,520;9..144,600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
     <style>
-      body { font-family: sans-serif; max-width: 40rem; margin: 2rem auto; }
-      #log { white-space: pre-wrap; border: 1px solid #ddd; min-height: 12rem; padding: 1rem; }
-      button { margin-right: 0.5rem; }
+      :root {
+        --ink: #17140f;
+        --muted: #6f675c;
+        --paper: #f3ece1;
+        --sheet: #fbf7f0;
+        --line: #e4dacb;
+        --olive: #243f34;
+        --olive-soft: #2f5646;
+        --you: #243f34;
+        --copper: #b85c38;
+        --ok: #2f6f4f;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        font-family: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(1200px 600px at 10% -10%, #efe4d2 0%, transparent 55%),
+          radial-gradient(900px 500px at 110% 10%, #dce6dc 0%, transparent 50%),
+          var(--paper);
+      }
+      .room {
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 1.5rem;
+        gap: 2rem;
+      }
+      @media (min-width: 960px) {
+        .room {
+          grid-template-columns: minmax(16rem, 22rem) 26.5rem;
+          justify-content: center;
+          align-items: center;
+          gap: 5rem;
+        }
+      }
+      .brand h1 {
+        font-family: Fraunces, Georgia, serif;
+        font-weight: 520;
+        font-size: 3.4rem;
+        letter-spacing: -0.04em;
+        margin: 0 0 0.6rem;
+      }
+      .eyebrow { color: var(--copper); font-weight: 600; font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase; margin: 0 0 0.7rem; }
+      .lede { margin: 0; color: var(--muted); font-size: 1.08rem; line-height: 1.45; max-width: 22rem; }
+      .sheet {
+        width: min(26.5rem, 100%);
+        height: min(44rem, calc(100dvh - 3rem));
+        background: var(--sheet);
+        border: 1px solid var(--line);
+        border-radius: 1.5rem;
+        box-shadow: 0 30px 70px rgba(36, 28, 16, 0.12);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+      }
+      header.top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1rem 1.1rem;
+        border-bottom: 1px solid var(--line);
+      }
+      .who { font-weight: 600; }
+      #presence { color: var(--muted); font-size: 0.85rem; margin-top: 0.1rem; }
+      #presence.live { color: var(--ok); }
+      #presence.warn { color: var(--copper); }
+      .voice-actions { display: flex; gap: 0.4rem; }
+      button {
+        font: inherit;
+        cursor: pointer;
+        border: 0;
+      }
+      .ghost, .talk, .end, .send {
+        border-radius: 999px;
+        padding: 0.55rem 0.95rem;
+        font-weight: 600;
+      }
+      .talk { background: var(--olive); color: #f7f1e7; }
+      .talk[aria-pressed="true"] { background: var(--copper); }
+      .end { background: #efe4d8; color: var(--ink); display: none; }
+      .end.show { display: inline-flex; }
+      .thread {
+        overflow: auto;
+        padding: 1.15rem 1.1rem 0.4rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.7rem;
+      }
+      .empty { margin: auto 0.4rem; color: var(--muted); text-align: center; }
+      .empty p { margin: 0 0 1rem; line-height: 1.45; }
+      .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; }
+      .chip {
+        background: #efe7db;
+        color: var(--ink);
+        border-radius: 999px;
+        padding: 0.45rem 0.8rem;
+        font-size: 0.9rem;
+      }
+      .bubble { max-width: 84%; padding: 0.7rem 0.9rem; border-radius: 1.05rem; line-height: 1.4; white-space: pre-wrap; }
+      .bubble.you { align-self: flex-end; background: var(--you); color: #f6f0e6; border-bottom-right-radius: 0.3rem; }
+      .bubble.parley { align-self: flex-start; background: #fff; border: 1px solid var(--line); border-bottom-left-radius: 0.3rem; }
+      .bubble.note { align-self: center; background: transparent; color: var(--muted); font-size: 0.82rem; padding: 0.2rem; }
+      .composer {
+        display: flex;
+        gap: 0.45rem;
+        padding: 0.85rem 1rem 0.7rem;
+        border-top: 1px solid var(--line);
+        background: #f7f1e8;
+      }
+      #draft {
+        flex: 1;
+        font: inherit;
+        border: 1px solid var(--line);
+        background: #fff;
+        border-radius: 999px;
+        padding: 0.7rem 1rem;
+        outline: none;
+      }
+      #draft:focus { border-color: #b9cbbf; }
+      .send { background: var(--ink); color: #f6f0e6; min-width: 6.2rem; }
+      .send:disabled { opacity: 0.45; cursor: default; }
+      #sms { margin: 0; padding: 0 1rem 0.9rem; color: var(--muted); font-size: 0.82rem; text-align: center; }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
     </style>
   </head>
   <body>
-    <h1>Parley</h1>
-    <p>One Conversation. Buttons are Message, Talk, and End — not a call button.</p>
-    <div>
-      <button id="message">Message</button>
-      <button id="talk">Talk</button>
-      <button id="end">End</button>
+    <div class="room">
+      <aside class="brand">
+        <p class="eyebrow">Live conversation</p>
+        <h1>Parley</h1>
+        <p class="lede">Write, talk, or text. It all stays in one place, with the same person on the other end.</p>
+      </aside>
+      <section class="sheet" aria-label="Conversation with Parley">
+        <header class="top">
+          <div>
+            <div class="who">Parley</div>
+            <div id="presence">Getting ready…</div>
+          </div>
+          <div class="voice-actions">
+            <button class="talk" id="talk" type="button">Talk</button>
+            <button class="end" id="end" type="button">End</button>
+          </div>
+        </header>
+        <div id="thread" class="thread">
+          <div class="empty" id="empty">
+            <p>Say hello whenever you’re ready. A person can join later without starting over.</p>
+            <div class="chips">
+              <button class="chip" type="button" data-prompt="Hi — what is this?">What is this?</button>
+              <button class="chip" type="button" data-prompt="I’d rather talk than type.">I’d rather talk</button>
+            </div>
+          </div>
+        </div>
+        <form id="composer" class="composer">
+          <input id="draft" autocomplete="off" placeholder="Write a message" />
+          <button class="send" id="message" type="submit">Message</button>
+        </form>
+        <p id="sms"></p>
+      </section>
     </div>
-    <p><input id="draft" placeholder="Type a message" size="40" /></p>
-    <div id="log"></div>
+    <div id="log" class="sr-only" aria-hidden="true"></div>
     <script type="module">
-      import { UctpClient, envelope } from "./src/uctp.ts";
       const params = new URLSearchParams(location.search);
-      const token = params.get("token") || "";
-      const uctp = params.get("uctp") || `ws://${location.hostname}:7443`;
+      let token = params.get("token") || "";
+      const pub = await fetch("/v1/public").then((r) => r.json()).catch(() => ({}));
+      const uctp = params.get("uctp") || pub.uctp_ws_url || `ws://${location.hostname}:7443`;
       const log = document.getElementById("log");
+      const thread = document.getElementById("thread");
+      const empty = document.getElementById("empty");
+      const presence = document.getElementById("presence");
+      const endBtn = document.getElementById("end");
+      const talkBtn = document.getElementById("talk");
+      const seen = new Set();
+      const aiIds = new Set();
+      let pendingYou = null;
+      let live = null;
       const line = (m) => { log.textContent += m + "\n"; };
+      function setPresence(text, kind) {
+        presence.textContent = text;
+        presence.className = kind || "";
+      }
+      function prettyPhone(value) {
+        const digits = String(value || "").replace(/\D/g, "");
+        if (digits.length === 11 && digits.startsWith("1")) {
+          return `+1 ${digits.slice(1, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`;
+        }
+        return value;
+      }
+      function addBubble(who, text, id) {
+        if (id && seen.has(id)) return;
+        if (
+          who === "you" &&
+          pendingYou !== null &&
+          text === pendingYou &&
+          id &&
+          !String(id).startsWith("local-")
+        ) {
+          seen.add(id);
+          return;
+        }
+        if (id) seen.add(id);
+        if (empty) empty.remove();
+        const el = document.createElement("div");
+        el.className = "bubble " + who;
+        el.textContent = text;
+        thread.appendChild(el);
+        thread.scrollTop = thread.scrollHeight;
+      }
+      function note(text) {
+        const el = document.createElement("div");
+        el.className = "bubble note";
+        el.textContent = text;
+        thread.appendChild(el);
+        thread.scrollTop = thread.scrollHeight;
+      }
+      function rememberPeople(parts) {
+        for (const p of parts || []) {
+          if (p.kind === "ai") aiIds.add(p.id);
+        }
+      }
+      function whoFor(message) {
+        if (message.from_participant && aiIds.has(message.from_participant)) return "parley";
+        return "you";
+      }
+      function listenLive() {
+        if (!token || live) return;
+        live = new EventSource("/v1/events?access_token=" + encodeURIComponent(token));
+        const kick = (ev) => {
+          let data = {};
+          try { data = JSON.parse(ev.data || "{}"); } catch (_) {}
+          if (data.conversation_id && !cid) cid = data.conversation_id;
+          if (data.conversation_id && cid && data.conversation_id !== cid) return;
+          if (!cid) return;
+          pullMessages();
+        };
+        [
+          "message.posted",
+          "conversation.opened",
+          "conversation.continued",
+          "session.started",
+          "session.ended",
+          "resync",
+        ].forEach((name) => live.addEventListener(name, kick));
+      }
+      async function pullMessages() {
+        if (!cid || !token) return;
+        const people = await fetch(`/v1/conversations/${cid}/participants`, {
+          headers: { authorization: "Bearer " + token },
+        }).then((r) => r.json()).catch(() => ({}));
+        rememberPeople(people.participants);
+        const res = await fetch(`/v1/conversations/${cid}/messages`, {
+          headers: { authorization: "Bearer " + token },
+        });
+        const data = await res.json().catch(() => ({}));
+        for (const m of data.messages || []) {
+          if (!m.id || !m.body) continue;
+          addBubble(whoFor(m), m.body, m.id);
+          line(m.body);
+        }
+      }
       function readCookie(name) {
         const prefix = name + "=";
         return document.cookie.split(";").map((p) => p.trim()).find((p) => p.startsWith(prefix))?.slice(prefix.length) || "";
@@ -36,131 +290,202 @@
       let client = null;
       let sid = null;
       let pc = null;
+      let envelope = null;
+      let ipv4OnlySdp = null;
+      async function loadUctp() {
+        const mod = await import("./uctp.js?v=3");
+        envelope = mod.envelope;
+        ipv4OnlySdp = mod.ipv4OnlySdp;
+        return mod;
+      }
       async function ensureClient() {
+        await ensureConversation();
         if (client) return client;
+        const { UctpClient, envelope: env } = await loadUctp();
         client = new UctpClient(uctp, token);
         await client.connect();
         await client.auth();
         const opened = client.waitType("conversation.opened");
-        client.send(envelope("conversation.create", {
+        client.send(env("conversation.create", {
           tenant_id: "ten_local",
           policy: "persistent",
           metadata: { visitor_id: visitor, cookie: visitor },
           initial_participants: [],
         }, cid ? { cid } : {}));
-        const env = await opened;
-        cid = env.cid || cid;
-        line("conversation " + cid);
+        const openedEnv = await opened;
+        cid = openedEnv.cid || cid;
         return client;
       }
+      if (pub.sms) {
+        document.getElementById("sms").textContent = "Prefer texting? Same conversation at " + prettyPhone(pub.sms) + ".";
+      }
       async function rest(method, path, body) {
+        const headers = { "content-type": "application/json" };
+        if (token) headers.authorization = "Bearer " + token;
         const res = await fetch(path, {
           method,
-          headers: {
-            authorization: "Bearer " + token,
-            "content-type": "application/json",
-          },
+          headers,
           body: body ? JSON.stringify(body) : undefined,
         });
         return { status: res.status, json: await res.json().catch(() => ({})) };
       }
+      async function ensureConversation() {
+        if (!token) {
+          const minted = await rest("POST", "/v1/public/widget-token", {
+            visitor_id: visitor,
+            origin: location.origin,
+          });
+          token = minted.json.token || "";
+          if (!token) throw new Error("Couldn’t start. Refresh the page and try again.");
+        }
+        listenLive();
+        if (!cid) {
+          const created = await rest("POST", "/v1/conversations", {
+            identity: { visitor_id: visitor, cookie: visitor },
+            policy: "persistent",
+          });
+          cid = created.json.id || "";
+          rememberPeople(created.json.participants);
+          if (!cid) throw new Error("Couldn’t open a conversation. Refresh and try again.");
+          line("conversation " + cid);
+        }
+        return cid;
+      }
       function waitIce(peer) {
         if (peer.iceGatheringState === "complete") return Promise.resolve();
         return new Promise((resolve) => {
+          const timer = setTimeout(resolve, 2500);
           peer.onicegatheringstatechange = () => {
-            if (peer.iceGatheringState === "complete") resolve();
+            if (peer.iceGatheringState === "complete") {
+              clearTimeout(timer);
+              resolve();
+            }
           };
         });
       }
-      document.getElementById("message").onclick = async () => {
-        const c = await ensureClient();
-        sid = sid || `sess_${crypto.randomUUID().replace(/-/g, "")}`;
-        c.send(envelope("session.invite", {
-          from: "part_widget",
-          to: ["part_ai"],
-          medium: "text",
-          intent: "message",
-          capabilities_offer: {},
-        }, { cid, sid }));
-        const body = document.getElementById("draft").value || "hello";
-        c.send(envelope("message.send", {
-          msg_id: `msg_${crypto.randomUUID().replace(/-/g, "")}`,
-          from: "part_widget",
-          to: "all",
-          content_type: "text/plain",
-          label: "rvoip-messages",
-          body,
-          body_encoding: "utf8",
-          attachments: [],
-        }, { cid, sid, connid: "conn_widget_text" }));
-        line("sent UCTP message.send");
-      };
-      document.getElementById("talk").onclick = async () => {
-        const c = await ensureClient();
-        const created = await rest("POST", `/v1/conversations/${cid}/sessions`, {
-          medium: "voice",
-          direction: "inbound",
-        });
-        if (created.status !== 200 || !created.json.id) {
-          line("Talk failed: voice session " + created.status);
+      async function sendMessage(text) {
+        const body = (text || "").trim();
+        if (!body) {
+          document.getElementById("draft").focus();
           return;
         }
-        sid = created.json.id;
-        const connid = `conn_customer_${sid}`;
-        c.send(envelope("session.invite", {
-          from: "part_widget",
-          to: ["part_ai"],
-          medium: "voice",
-          intent: "talk",
-          capabilities_offer: {},
-        }, { cid, sid }));
-        pc = new RTCPeerConnection();
+        await ensureConversation();
+        pendingYou = body;
+        addBubble("you", body, "local-pending");
+        const posted = await rest("POST", `/v1/conversations/${cid}/messages`, { medium: "chat", body });
+        if (posted.status !== 200) {
+          pendingYou = null;
+          note("That message didn’t send. Try again.");
+          return;
+        }
+        if (posted.json.id) {
+          seen.add(posted.json.id);
+        }
+        pendingYou = null;
+        document.getElementById("draft").value = "";
+        await pullMessages();
+      }
+      document.getElementById("composer").onsubmit = async (event) => {
+        event.preventDefault();
         try {
-          const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-          for (const track of media.getTracks()) pc.addTrack(track, media);
+          await sendMessage(document.getElementById("draft").value);
         } catch (err) {
-          line("mic unavailable: " + err);
-        }
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await waitIce(pc);
-        const sdp = pc.localDescription && pc.localDescription.sdp;
-        if (!sdp) {
-          line("Talk failed: no local SDP");
-          return;
-        }
-        const answered = c.waitType("connection.answer");
-        c.send(envelope("connection.offer", {
-          by_participant: "part_widget",
-          substrate: "websocket+webrtc",
-          capabilities: {},
-          streams_offered: [{
-            id: "strm_audio",
-            kind: "audio",
-            direction: "send-recv",
-            codec_preferences: ["opus"],
-          }],
-          substrate_setup: { kind: "websocket+webrtc", sdp },
-        }, { cid, sid, connid }));
-        line("sent session.invite medium voice + connection.offer (UCTP substrate_setup, not a private offer/sdp JSON)");
-        const answer = await answered;
-        const setup = answer.payload && answer.payload.substrate_setup;
-        if (setup && setup.sdp) {
-          await pc.setRemoteDescription({ type: "answer", sdp: setup.sdp });
-          line("Talk connected; cid unchanged; customer connection " + connid);
-        } else {
-          line("no connection.answer SDP (server needs media-webrtc)");
+          note("Something went wrong. Refresh and try again.");
         }
       };
-      document.getElementById("end").onclick = async () => {
-        if (!client || !sid) return;
-        client.send(envelope("session.end", { by: "part_widget", reason_code: 200, reason: "end" }, { cid, sid }));
+      document.querySelectorAll("[data-prompt]").forEach((btn) => {
+        btn.onclick = () => sendMessage(btn.getAttribute("data-prompt"));
+      });
+      talkBtn.onclick = async () => {
+        try {
+          await ensureConversation();
+          setPresence("Connecting voice…");
+          const c = await ensureClient();
+          const created = await rest("POST", `/v1/conversations/${cid}/sessions`, {
+            medium: "voice",
+            direction: "inbound",
+          });
+          if (created.status !== 200 || !created.json.id) {
+            setPresence("Voice didn’t start", "warn");
+            note("Voice didn’t start. You can keep typing.");
+            return;
+          }
+          sid = created.json.id;
+          const connid = `conn_customer_${sid}`;
+          c.send(envelope("session.invite", {
+            from: "part_widget",
+            to: ["part_ai"],
+            medium: "voice",
+            intent: "talk",
+            capabilities_offer: {},
+          }, { cid, sid }));
+          pc = new RTCPeerConnection();
+          try {
+            const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            for (const track of media.getTracks()) pc.addTrack(track, media);
+          } catch (_) {
+            setPresence("Microphone blocked", "warn");
+            note("Allow the microphone to talk, or keep typing.");
+            return;
+          }
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await waitIce(pc);
+          const sdp = ipv4OnlySdp(pc.localDescription && pc.localDescription.sdp);
+          if (!sdp) {
+            note("Voice didn’t start. You can keep typing.");
+            return;
+          }
+          const answered = c.waitType("connection.answer");
+          c.send(envelope("connection.offer", {
+            by_participant: "part_widget",
+            substrate: "websocket+webrtc",
+            capabilities: {},
+            streams_offered: [{
+              id: "strm_audio",
+              kind: "audio",
+              direction: "send-recv",
+              codec_preferences: ["opus"],
+            }],
+            substrate_setup: { kind: "websocket+webrtc", sdp },
+          }, { cid, sid, connid }));
+          const answer = await answered;
+          const setup = answer.payload && answer.payload.substrate_setup;
+          if (setup && setup.sdp) {
+            await pc.setRemoteDescription({ type: "answer", sdp: ipv4OnlySdp(setup.sdp) });
+            talkBtn.setAttribute("aria-pressed", "true");
+            endBtn.classList.add("show");
+            setPresence("You’re talking", "live");
+            note("You’re on voice with Parley.");
+          } else {
+            setPresence("Here", "");
+            note("Voice isn’t available right now. You can keep typing.");
+          }
+        } catch (_) {
+          setPresence("Voice isn’t ready", "warn");
+          note("Voice isn’t ready yet. You can still send a message.");
+        }
+      };
+      endBtn.onclick = async () => {
+        if (client && sid) {
+          client.send(envelope("session.end", { by: "part_widget", reason_code: 200, reason: "end" }, { cid, sid }));
+        }
         if (pc) {
           pc.close();
           pc = null;
         }
-        line("sent session.end");
+        talkBtn.setAttribute("aria-pressed", "false");
+        endBtn.classList.remove("show");
+        setPresence("Here");
+        note("Voice ended. You can keep writing.");
       };
+      ensureConversation()
+        .then(() => {
+          setPresence("Here");
+          listenLive();
+          return pullMessages();
+        })
+        .catch(() => setPresence("Couldn’t start", "warn"));
     </script>
   </body>
 </html>

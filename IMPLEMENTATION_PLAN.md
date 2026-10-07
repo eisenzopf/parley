@@ -1,7 +1,7 @@
 # Parley — Implementation Plan
 
-**Status:** Draft. Implementable contract for v1.
-**Date:** 2026-09-15
+**Status:** v1 gates met (2026-09-16). Laptop demo, CI fakes, and PRD §8 path are implemented.
+**Date:** 2026-09-16
 **Product contract:** [`PRD.md`](PRD.md) (wins on product conflicts)
 **rvoip upstream contract:** PRD §2.2 (UP-1–UP-5)
 **voip-3:** rvoip `docs/voip-3-conversation-model.md`
@@ -675,5 +675,7 @@ v1 is implemented when:
 2. `tests/demo_script.rs` (or equivalent) passes PRD §8 on a laptop with fakes.
 3. Public HTTP and UCTP speak only voip-3 nouns.
 4. README can run the demo in 30 minutes.
+
+**Recorded 2026-09-16:** §4.5 (`participant_roles`, `rvoip-vapi`, `conversation_create`) green on `../rvoip` `parley/upstream`. Parley `cargo test`, SIP loopback, Talk WebRTC, `demo_script`, and Playwright widget/desk fakes green. After-hours SIP stores a voicemail Message (`medium=audio`) instead of starting a voice Session.
 
 Anything after that is PRD §23.2.

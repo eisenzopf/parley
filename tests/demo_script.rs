@@ -22,7 +22,9 @@ async fn json(
         .header("authorization", "Bearer dev-only")
         .header("content-type", "application/json");
     let req = if let Some(body) = body {
-        builder.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()
+        builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
     } else {
         builder.body(Body::empty()).unwrap()
     };
@@ -76,21 +78,21 @@ async fn laptop_demo_chat_sms_close_vcon() {
     assert_eq!(status, StatusCode::OK, "{chat}");
     assert_eq!(chat["medium"], "chat");
 
-    let reply = parley::vapi_chat::complete(&app.state, "ten_local", &cid, "what are your hours?")
-        .await
-        .unwrap();
-    parley::conversation::post_message(
-        &app.state,
-        "ten_local",
-        &cid,
-        parley::conversation::PostMessage {
-            medium: "chat".into(),
-            sender_participant_id: Some(ids.ai_participant_id.clone()),
-            body: reply.text,
-        },
+    let (status, listed) = json(
+        router.clone(),
+        "GET",
+        &format!("/v1/conversations/{cid}/messages"),
         None,
     )
-    .unwrap();
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let messages = listed["messages"].as_array().expect("messages");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["body"].as_str().unwrap_or("").starts_with("fake-reply:")),
+        "AI chat reply missing: {listed}"
+    );
 
     let (status, sms) = json(
         router.clone(),
@@ -172,7 +174,17 @@ async fn laptop_demo_chat_sms_close_vcon() {
     .await;
     assert_eq!(status, StatusCode::OK, "{closed}");
 
-    let (status, vcon) = json(router, "GET", &format!("/v1/conversations/{cid}/vcon"), None).await;
+    let (status, vcon) = json(
+        router,
+        "GET",
+        &format!("/v1/conversations/{cid}/vcon"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{vcon}");
     assert!(vcon.get("parties").is_some() || vcon.get("vcon").is_some());
+    assert!(vcon
+        .pointer("/parley.vcon.conversation.v1/cid")
+        .and_then(|v| v.as_str())
+        .is_some());
 }

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "sandbox": true,
+  "task": "My flight was canceled. Help Alex and me arrange an alternative with the travel booker, update the conference organizer, and bring me into the confirmation call. Ask me to approve the final sandbox arrangements before texting everyone.",
+  "alternative": { "flight": "RD742", "departure": "16:00", "arrival": "17:00", "terminal": "C", "travelers": 2 },
+  "booker_transcript": "Sandbox option: two seats on RD742 departing at 16:00, arriving at terminal C at 17:00. No real booking has been made.",
+  "organizer_reply": "Terminal C at 17:00 works. Please call to confirm the pickup.",
+  "organizer_transcript": "I can arrange pickup at terminal C at 17:00. Bring Jonathan into this call to confirm.",
+  "proposal": "Sandbox arrangements: Jonathan and Alex take RD742, departing at 16:00 and arriving at terminal C at 17:00. The organizer confirmed pickup. No real travel purchase has been made."
+}

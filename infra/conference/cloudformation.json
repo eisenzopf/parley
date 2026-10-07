@@ -1,0 +1,562 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Isolated Parley conference host; no SSH ingress, secrets in one SecureString parameter. Telnyx ranges sourced from sip.telnyx.com/voice.json on 2026-10-06.",
+  "Parameters": {
+    "ImageId": {
+      "Type": "AWS::EC2::Image::Id"
+    }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.89.0.0/24",
+        "EnableDnsSupport": true,
+        "EnableDnsHostnames": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          },
+          {
+            "Key": "Name",
+            "Value": "parley-conference"
+          }
+        ]
+      }
+    },
+    "Gateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      }
+    },
+    "Attachment": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "InternetGatewayId": {
+          "Ref": "Gateway"
+        }
+      }
+    },
+    "Subnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "CidrBlock": "10.89.0.0/24",
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      }
+    },
+    "Routes": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      }
+    },
+    "InternetRoute": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "Routes"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "Gateway"
+        }
+      },
+      "DependsOn": "Attachment"
+    },
+    "RouteAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "Routes"
+        },
+        "SubnetId": {
+          "Ref": "Subnet"
+        }
+      }
+    },
+    "SecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Parley conference HTTPS and constrained media; administration uses SSM",
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 80,
+            "ToPort": 80,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS and ACME"
+          },
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS and ACME"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 46000,
+            "ToPort": 46100,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "Authenticated WebRTC DTLS media"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 5062,
+            "ToPort": 5062,
+            "CidrIp": "192.76.120.10/32",
+            "Description": "Telnyx US SIP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 5062,
+            "ToPort": 5062,
+            "CidrIp": "64.16.250.10/32",
+            "Description": "Telnyx US SIP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "36.255.198.128/25",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "50.114.136.128/25",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "50.114.144.0/21",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.226.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.227.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.228.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.229.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.230.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.248.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.249.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.246.96/27",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "64.16.246.128/26",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "103.115.244.128/25",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "103.115.247.0/24",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "185.246.41.128/25",
+            "Description": "Telnyx RTP"
+          },
+          {
+            "IpProtocol": "udp",
+            "FromPort": 44000,
+            "ToPort": 44200,
+            "CidrIp": "185.246.42.128/28",
+            "Description": "Telnyx RTP"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      }
+    },
+    "Artifacts": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "ExpireBuildArtifacts",
+              "Status": "Enabled",
+              "ExpirationInDays": 30
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "InstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "ReadConferenceArtifacts",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${Artifacts.Arn}/*"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:GetParameter"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/parley/conference-2026/runtime"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "ConferenceParameterBoundary",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Deny",
+                  "Action": [
+                    "ssm:GetParameter",
+                    "ssm:GetParameters",
+                    "ssm:GetParametersByPath"
+                  ],
+                  "NotResource": [
+                    {
+                      "Fn::Sub": "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/parley/conference-2026/runtime"
+                    },
+                    {
+                      "Fn::Sub": "arn:aws:ssm:${AWS::Region}::parameter/aws/service/*"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      }
+    },
+    "InstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Roles": [
+          {
+            "Ref": "InstanceRole"
+          }
+        ]
+      }
+    },
+    "Host": {
+      "Type": "AWS::EC2::Instance",
+      "Properties": {
+        "ImageId": {
+          "Ref": "ImageId"
+        },
+        "InstanceType": "m7g.xlarge",
+        "IamInstanceProfile": {
+          "Ref": "InstanceProfile"
+        },
+        "SubnetId": {
+          "Ref": "Subnet"
+        },
+        "SecurityGroupIds": [
+          {
+            "Ref": "SecurityGroup"
+          }
+        ],
+        "MetadataOptions": {
+          "HttpTokens": "required",
+          "HttpEndpoint": "enabled"
+        },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+              "VolumeType": "gp3",
+              "VolumeSize": 80,
+              "Encrypted": true,
+              "DeleteOnTermination": true
+            }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": "#!/bin/bash\nset -euo pipefail\numask 027\ndnf install -y gcc gcc-c++ make cmake openssl-devel pkgconf-pkg-config git tar gzip clang opus-devel\nuseradd --system --create-home --home-dir /opt/parley --shell /bin/bash parley\ninstall -d -o parley -g parley -m 750 /opt/parley/releases /opt/parley/state /opt/parley/build\ninstall -d -m 700 /etc/parley\ncurl --fail --silent --show-error --location https://sh.rustup.rs -o /tmp/parley-rustup.sh\nchmod 644 /tmp/parley-rustup.sh\nsu -s /bin/bash parley -c 'sh /tmp/parley-rustup.sh -y --profile minimal --default-toolchain 1.91.0'\ntouch /opt/parley/bootstrap-ready\n"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          },
+          {
+            "Key": "Name",
+            "Value": "parley-conference-2026"
+          }
+        ]
+      },
+      "DependsOn": [
+        "InternetRoute",
+        "RouteAssociation"
+      ]
+    },
+    "PublicIp": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "parley-conference"
+          },
+          {
+            "Key": "Owner",
+            "Value": "Rudeless"
+          },
+          {
+            "Key": "ReviewAfter",
+            "Value": "2026-10-16"
+          }
+        ]
+      },
+      "DependsOn": "Attachment"
+    },
+    "IpAssociation": {
+      "Type": "AWS::EC2::EIPAssociation",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "PublicIp",
+            "AllocationId"
+          ]
+        },
+        "InstanceId": {
+          "Ref": "Host"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "InstanceId": {
+      "Value": {
+        "Ref": "Host"
+      }
+    },
+    "PublicIp": {
+      "Value": {
+        "Ref": "PublicIp"
+      }
+    },
+    "ArtifactBucket": {
+      "Value": {
+        "Ref": "Artifacts"
+      }
+    }
+  }
+}

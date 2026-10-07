@@ -1,8 +1,54 @@
-/target
-parley.sqlite
-parley.sqlite-*
+# Build output and private runtime/evidence files.
+/target/
+/dist/
+/build/
+/var/
+*.log
+*.pid
+
+# Local databases, including journals and WAL files.
 *.sqlite
 *.sqlite-*
-/var
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Local configuration and credentials. Keep the public example tracked.
 .env
+.env.*
+!.env.example
+config/*.local.toml
+config/*.local.json
+credentials.json
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+cloudflared*.json
+
+# Dependency, test, and interpreter output.
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+playwright-report/
+test-results/
+blob-report/
+
+# OS and editor scratch files.
 .DS_Store
+*.swp
+*.swo
+*~

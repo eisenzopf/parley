@@ -44,14 +44,34 @@ pub async fn start(state: AppState) -> Result<SocketAddr> {
             &self,
             token: &str,
         ) -> std::result::Result<AuthenticatedPrincipal, BearerAuthError> {
+            if let Some((tenant, subject, expires)) =
+                self.state
+                    .store
+                    .conference_principal(token)
+                    .map_err(|e| BearerAuthError::Invalid(e.detail))?
+            {
+                return Ok(AuthenticatedPrincipal {
+                    subject,
+                    tenant: Some(tenant),
+                    scopes: vec!["uctp:conversation-control".into()],
+                    issuer: Some("parley".into()),
+                    expires_at: Some(expires),
+                    method: AuthenticationMethod::Bearer,
+                    assurance: IdentityAssurance::UserAuthorized {
+                        identity: IdentityId::new(),
+                        user_id: IdentityId::new(),
+                        scopes: vec!["uctp:conversation-control".into()],
+                    },
+                });
+            }
             let ctx = crate::auth::authenticate(&self.state.store, &self.state.config, Some(token))
                 .map_err(|e| BearerAuthError::Invalid(e.detail))?;
             let subject = match &ctx.actor {
                 crate::auth::Actor::ApiSecret => "api".into(),
                 crate::auth::Actor::Widget { visitor_id, .. } => {
-                    visitor_id.clone().unwrap_or_else(|| "widget".into())
+                    format!("widget:{}", visitor_id.as_deref().unwrap_or("anonymous"))
                 }
-                crate::auth::Actor::Operator { operator_id } => operator_id.clone(),
+                crate::auth::Actor::Operator { operator_id } => format!("operator:{operator_id}"),
             };
             Ok(AuthenticatedPrincipal {
                 subject,
@@ -137,17 +157,119 @@ pub async fn start(state: AppState) -> Result<SocketAddr> {
         *bound = Some(addr);
     }
     let adapter = UctpWsAdapter::new(
-        UctpWsConfig::new(listener, Arc::new(ParleyBearer { state: state.clone() }))
-            .with_orchestrator(Arc::clone(&state.orchestrator))
-            .with_conversation_create_hook(Arc::new(ParleyCreateHook {
+        UctpWsConfig::new(
+            listener,
+            Arc::new(ParleyBearer {
                 state: state.clone(),
-            })),
+            }),
+        )
+        .with_application_handler(Arc::new(crate::uctp_commands::Commands::new(state.clone())))
+        .with_orchestrator(Arc::clone(&state.orchestrator))
+        .with_conversation_create_hook(Arc::new(ParleyCreateHook {
+            state: state.clone(),
+        })),
     )
     .await
     .map_err(|e| ApiError::internal(format!("uctp adapter: {e}")))?;
+    state
+        .uctp_adapter
+        .set(adapter.clone())
+        .map_err(|_| ApiError::conflict("UCTP adapter already started"))?;
     state
         .orchestrator
         .register(adapter as Arc<dyn ConnectionAdapter>)
         .map_err(|e| ApiError::internal(format!("register uctp: {e}")))?;
     Ok(addr)
+}
+
+/// Admit legacy UCTP connections to a canonical core Session before consuming
+/// their data events. Peer-selected IDs alone never authorize the Conversation.
+#[cfg(feature = "uctp")]
+pub(crate) async fn admit_legacy(
+    state: &AppState,
+    connection_id: &rvoip_core::ids::ConnectionId,
+    principal: &rvoip_auth_core::AuthenticatedPrincipal,
+) -> Result<()> {
+    use crate::error::ApiError;
+    use rvoip_core::ids::{ParticipantId, SessionId};
+    let adapter = state
+        .uctp_adapter
+        .get()
+        .ok_or_else(|| ApiError::internal("UCTP adapter not registered"))?;
+    let (cid, wire_sid, medium) = adapter
+        .inbound_context(connection_id, principal)
+        .ok_or_else(|| ApiError::forbidden("UCTP route owner mismatch"))?;
+    let cid = cid.ok_or_else(|| ApiError::bad_request("Conversation required"))?;
+    let tenant = state.config.tenant_id.as_str();
+    if principal.tenant.as_deref() != Some(tenant) || principal.issuer.as_deref() != Some("parley")
+    {
+        return Err(ApiError::forbidden("Conversation tenant mismatch"));
+    }
+    if !state.store.conference_members(tenant, &cid)?.is_empty() {
+        return Err(ApiError::forbidden(
+            "conference admission requires conversation-control/1",
+        ));
+    }
+    if let Some(visitor) = principal.subject.strip_prefix("widget:") {
+        let identity = state.store.lookup_identity(tenant, "visitor_id", visitor)?;
+        if !identity.is_some_and(|i| i.conversation_id == cid && !i.do_not_reopen) {
+            return Err(ApiError::forbidden("widget does not own Conversation"));
+        }
+    } else if principal.subject != "api" && !principal.subject.starts_with("operator:") {
+        return Err(ApiError::forbidden("legacy admission denied"));
+    }
+    let customer = state
+        .store
+        .list_participants(tenant, &cid)?
+        .into_iter()
+        .find(|p| p.role == "customer")
+        .ok_or_else(|| ApiError::not_found("Conversation customer missing"))?;
+    let session = if let Some(existing) = state.store.get_session(tenant, &wire_sid)? {
+        if existing.conversation_id != cid
+            || existing.state != "active"
+            || existing.medium != medium
+        {
+            return Err(ApiError::forbidden(
+                "requested Session is not active in this Conversation and medium",
+            ));
+        }
+        existing
+    } else {
+        crate::conversation::start_session(
+            state,
+            tenant,
+            &cid,
+            crate::conversation::PostSession {
+                medium,
+                direction: Some("inbound".into()),
+            },
+        )
+        .await?
+    };
+    let sid = SessionId::from_string(session.id.clone());
+    if let Err(error) = state
+        .orchestrator
+        .route_inbound_connection(
+            connection_id.clone(),
+            rvoip_core::commands::InboundAction::Accept {
+                session_id: sid.clone(),
+                participant_id: ParticipantId::from_string(customer.id.clone()),
+            },
+        )
+        .await
+    {
+        let _ = crate::conversation::end_session(state, tenant, &session.id).await;
+        return Err(ApiError::internal(format!("UCTP admission: {error}")));
+    }
+    state
+        .store
+        .insert_connection(&crate::store::ConnectionRow {
+            id: connection_id.to_string(),
+            tenant_id: tenant.into(),
+            session_id: session.id,
+            participant_id: customer.id,
+            transport: "uctp-websocket".into(),
+            state: "connected".into(),
+        })?;
+    Ok(())
 }

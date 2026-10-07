@@ -1,0 +1,31 @@
+[
+  {
+    "alias": "jonathan",
+    "name": "Jonathan",
+    "role": "owner",
+    "sms": "+14155550101"
+  },
+  {
+    "alias": "alex",
+    "name": "Alex",
+    "role": "companion",
+    "sms": "+14155550102"
+  },
+  {
+    "alias": "booker",
+    "name": "Travel booker",
+    "role": "booker",
+    "sms": "+14155550103"
+  },
+  {
+    "alias": "organizer",
+    "name": "Organizer",
+    "role": "organizer",
+    "sms": "+14155550104"
+  },
+  {
+    "alias": "assistant",
+    "name": "David",
+    "role": "assistant"
+  }
+]

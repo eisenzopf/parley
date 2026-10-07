@@ -1,0 +1,11 @@
+{
+  "name": "parley",
+  "private": true,
+  "scripts": {
+    "test:conference-client": "node --test clients/uctp-js/*.test.mjs examples/conference-assistant/*.test.mjs web/conference/*.test.mjs scripts/*.test.mjs",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.1"
+  }
+}

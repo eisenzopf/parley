@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bring the next connection · Rvoip + UCTP</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0d1420;color:#eaf0f8;font:17px/1.65 system-ui,sans-serif}main{max-width:1050px;margin:auto;padding:60px 28px}a{color:#a5ebce}h1{font-size:clamp(38px,6vw,68px);line-height:1.08;letter-spacing:-.04em;margin:24px 0}h2{font-size:27px;margin-top:40px}p{max-width:760px;color:#bdcbde}.tag{font:12px ui-monospace,monospace;color:#cbb5f2;text-transform:uppercase;letter-spacing:.12em}.lead{font-size:23px}.actions{display:flex;flex-wrap:wrap;gap:14px;margin:30px 0}.button{display:inline-block;padding:13px 20px;border-radius:9px;background:#a5ebce;color:#10221d;font-weight:700;text-decoration:none}.secondary{background:#25344a;color:#eaf0f8}.grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{background:#162235;border:1px solid #30435c;border-radius:12px;padding:26px}.card h2{margin:0 0 10px;font-size:23px}.card p{margin:0 0 15px}pre{padding:23px;background:#080e17;border:1px solid #30435c;border-radius:10px;overflow:auto;font:14px/1.65 ui-monospace,monospace}code{font-family:ui-monospace,monospace}li{margin:10px 0}.note{font-size:14px;border-left:3px solid #b9a4e9;padding-left:18px}.links{display:flex;flex-wrap:wrap;gap:14px 24px}footer{margin-top:50px;border-top:1px solid #30435c;padding-top:23px;color:#94a7c0;font-size:13px}@media(max-width:700px){main{padding:32px 20px}.grid{grid-template-columns:1fr}.lead{font-size:20px}}
+</style></head><body><main>
+<div class="tag">Rudeless · VoIP 3.0 · Experimental conference kit</div>
+<h1>Bring the next<br>connection.</h1>
+<p class="lead">Rvoip connects the systems. UCTP gives people and AI agents one Conversation interface.</p>
+<p>Build a connector for a service you know. Or build an application that can message, start voice and join an existing conversation through the same interface.</p>
+<div class="actions"><a class="button" href="parley-conference-kit.tar.gz" download>Download the source kit</a><a class="button secondary" href="https://github.com/eisenzopf/parley/issues">Share your integration idea</a></div>
+<p class="note">This is a working-tree source snapshot of the conference implementation, including the pinned Rvoip 0.3.12 patches and Vapi SDK. It is experimental, uses WebSocket control, and does not demonstrate QUIC. The public repository may lag this download. <a href="manifest.json">Source manifest</a> · <a href="SHA256SUMS">Download checksum</a></p>
+<p>The upstream changes are filed as <a href="https://github.com/eisenzopf/rvoip/pull/260">RTCP/SIP fixes</a>, <a href="https://github.com/eisenzopf/rvoip/pull/262">UCTP application profiles</a> and <a href="https://github.com/eisenzopf/rvoip/pull/263">Vapi transport diagnostics</a>. The kit keeps its pinned local patches until a verified upstream release is available.</p>
+<p>For the live voice sequence while SMS is awaiting approval, follow the <a href="CONFERENCE_VOICE_REHEARSAL.md">voice rehearsal steps</a>: David gathers the booker's flight option, calls the organizer, invites Jonathan's browser into that call, and continues on Jonathan's phone. SMS delivery and the full conference release still require qualification.</p>
+<h2>Try the local rehearsal</h2>
+<p>Requires Rust 1.91, Node 22+, Python 3, a C/C++ toolchain and CMake. The rehearsal uses simulated AI/SMS providers and real local SIP/browser media. It sends no live calls or texts.</p>
+<pre><code>tar -xzf parley-conference-kit.tar.gz
+cd parley
+bash scripts/setup-rvoip.sh
+node scripts/verify-conference-dependencies.mjs
+npm ci
+npx playwright install chromium
+PARLEY_BROWSER_CHANNEL=chromium bash scripts/run-conference-demo.sh rehearsal</code></pre>
+<p>The setup script creates a separate pinned Rvoip checkout beside Parley. On Linux, install Playwright system dependencies with <code>npx playwright install --with-deps chromium</code>. See the <a href="CONFERENCE_RUNBOOK.md">runbook</a> for private credentials, live providers, recovery and scope.</p>
+<h2>One interface, three actions</h2>
+<p>An authenticated client addresses participants. The server resolves their private network endpoints and connectors. Keep mutating envelopes for an exact retry after a lost response.</p>
+<pre><code>const client = new UctpClient(url, participantToken);
+await client.connect();
+
+const update = client.command('message.send', cid, {
+  msg_id: uniqueMessageId, to: [organizerId], delivery: 'sms',
+  content_type: 'text/plain', body: 'Can we confirm the revised pickup?'
+});
+await client.request(update);
+
+const invite = client.command('session.invite', cid, {
+  to: organizerId, medium: 'voice', purpose: 'Confirm the pickup'
+});
+const accepted = await client.request(invite);
+
+// After session.assistant_attached, from a browser user gesture:
+await browserAudio.join(accepted.payload.session.sid);</code></pre>
+<p>These operations contact the provisioned participant in live mode. An accepted command is not proof of delivery or connected audio. The <a href="CONTRIBUTING_CONNECTORS.md">complete example and connector contract</a> explain setup, event outcomes and browser negotiation.</p>
+<h2>Continue on another endpoint</h2>
+<p>Join the existing telephone call in your browser, then move your speaking connection to your provisioned phone through the same UCTP interface.</p>
+<pre><code>// From Jonathan’s authenticated browser, after joining:
+const callback = await browserAudio.moveToPhone();
+// Answer the callback and press 1 when prompted.
+// Observe phone.speaking before retiring browser media.</code></pre>
+<p>The original remote call, Session and Conversation are retained. The browser remains connected until the callback is confirmed. This is an explicit endpoint move; automatic network-failure detection and gap-free audio are not claimed. The <a href="UCTP_CONFERENCE_PROFILE.md">profile</a> describes authorization, cancellation, exact retries and supported codecs.</p>
+<div class="grid">
+<section class="card"><h2>Connect your system</h2><p>Implement a Rvoip media adapter or the host’s durable messaging path. Start with one operation and a local fixture.</p><a href="CONTRIBUTING_CONNECTORS.md">Read the connector contract</a></section>
+<section class="card"><h2>Connect your application</h2><p>Use the reference client from Node or a browser. The included external assistant stores commands and resumes through UCTP.</p><a href="client.mjs" download>Get the reference client</a></section>
+</div>
+<h2>What should we connect next?</h2>
+<p>Team messaging, email, radio, another SMS provider, or the network your community uses. These are contribution ideas; current examples cover SIP/PSTN, WebRTC, Telnyx SMS and Vapi.</p>
+<ol><li><a href="https://github.com/eisenzopf/parley/issues/new">Open a Parley issue</a> with your service, operation, capability limits and proposed local fixture.</li><li>Share a runnable example and a redacted trace linking a request to its result and external outcome.</li><li>For media adapters, contribute to <a href="https://github.com/eisenzopf/rvoip">Rvoip</a>. For Conversation clients and the conference host, contribute to <a href="https://github.com/eisenzopf/parley">Parley</a>.</li></ol>
+<p class="note">Keep credentials, participant contacts and recordings private. Publish supported capabilities and distinguish acceptance, delivery and human replies. A reusable cross-provider messaging trait is still a contribution opportunity.</p>
+<div class="links"><a href="UCTP_CONFERENCE_PROFILE.md">Experimental UCTP profile</a><a href="CONFERENCE_IMPLEMENTATION_STATUS.md">Verification and remaining gates</a><a href="CONFERENCE_RUNBOOK.md">Operator runbook</a></div>
+<footer>MIT source kit · conversation-control/1 · Rvoip 0.3.12 + conference patches · <a href="https://rudeless.ai">Rudeless</a></footer>
+</main></body></html>

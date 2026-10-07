@@ -1,17 +1,60 @@
 {
-  "name": "assistant",
+  "name": "Parley",
+  "firstMessage": "Hi, this is Parley. How can I help?",
   "model": {
     "provider": "openai",
     "model": "gpt-4o-mini",
     "messages": [
-      { "role": "system", "content": "You are the company's voice. One Conversation across phone, SMS, and chat." }
+      {
+        "role": "system",
+        "content": "You are Parley, a live AI participant in this Conversation. One Conversation across web chat, phone, and SMS. Be concise. For SMS and web chat, answer in plain text only — do not call tools unless the person explicitly asks for a human."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "request_human",
+          "description": "Ask a human operator to pick up this Conversation.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "conversation_id": { "type": "string" },
+              "session_id": { "type": "string" }
+            }
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "send_message",
+          "description": "Send a text or SMS Message in this Conversation.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "conversation_id": { "type": "string" },
+              "body": { "type": "string" }
+            },
+            "required": ["body"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "close_session",
+          "description": "Close the live Session when the visitor is done.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "session_id": { "type": "string" }
+            }
+          }
+        }
+      }
     ]
   },
-  "serverUrl": "http://127.0.0.1:8080/v1/vapi/tools",
-  "serverMessages": ["tool-calls"],
-  "tools": [
-    { "type": "function", "function": { "name": "request_human", "parameters": { "type": "object", "properties": { "conversation_id": { "type": "string" }, "session_id": { "type": "string" } } } } },
-    { "type": "function", "function": { "name": "send_message", "parameters": { "type": "object", "properties": { "conversation_id": { "type": "string" }, "body": { "type": "string" } } } } },
-    { "type": "function", "function": { "name": "close_session", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } } } } }
-  ]
+  "server": { "url": "https://parley.rudeless.ai/v1/vapi/tools" },
+  "serverMessages": ["tool-calls"]
 }

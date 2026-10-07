@@ -10,7 +10,8 @@ pub fn send(state: &AppState, tenant_id: &str, cid: &str, message: &MessageRow) 
         message_id = %message.id,
         "sms fake send"
     );
-    state.store.insert_event(
+    crate::events::emit(
+        state,
         tenant_id,
         Some(cid),
         "message.sent",

@@ -21,8 +21,14 @@ pub struct AcceptPickup {
     pub operator_participant_id: Option<String>,
 }
 
-pub async fn request(state: &AppState, tenant_id: &str, cid: &str, sid: Option<&str>) -> Result<()> {
-    state.store.insert_event(
+pub async fn request(
+    state: &AppState,
+    tenant_id: &str,
+    cid: &str,
+    sid: Option<&str>,
+) -> Result<()> {
+    crate::events::emit(
+        state,
         tenant_id,
         Some(cid),
         "pickup.requested",
@@ -110,7 +116,8 @@ pub async fn accept(
         state: "connected".into(),
     };
     state.store.insert_connection(&operator_conn)?;
-    state.store.insert_event(
+    crate::events::emit(
+        state,
         tenant_id,
         Some(cid),
         "pickup.accepted",
@@ -120,6 +127,7 @@ pub async fn accept(
         }),
     )?;
     observe::pickup();
+    crate::vapi_voice::mute_session(state, &sid).await;
     Ok(json!({
         "state": "accepted",
         "session_id": sid,
@@ -128,13 +136,19 @@ pub async fn accept(
     }))
 }
 
-pub async fn return_to_ai(state: &AppState, tenant_id: &str, cid: &str) -> Result<serde_json::Value> {
+pub async fn return_to_ai(
+    state: &AppState,
+    tenant_id: &str,
+    cid: &str,
+) -> Result<serde_json::Value> {
     let mut ai_id = None;
     let mut human_agents = Vec::new();
     for p in state.store.list_participants(tenant_id, cid)? {
         if p.kind == "ai" {
             ai_id = Some(p.id.clone());
-            state.store.set_participant_role(tenant_id, &p.id, "agent")?;
+            state
+                .store
+                .set_participant_role(tenant_id, &p.id, "agent")?;
             let _ = state
                 .orchestrator
                 .set_participant_role(
@@ -147,7 +161,9 @@ pub async fn return_to_ai(state: &AppState, tenant_id: &str, cid: &str) -> Resul
         }
     }
     for hid in &human_agents {
-        state.store.set_participant_role(tenant_id, hid, "observer")?;
+        state
+            .store
+            .set_participant_role(tenant_id, hid, "observer")?;
         let _ = state
             .orchestrator
             .set_participant_role(
@@ -156,12 +172,22 @@ pub async fn return_to_ai(state: &AppState, tenant_id: &str, cid: &str) -> Resul
             )
             .await;
     }
-    state.store.insert_event(
+    crate::events::emit(
+        state,
         tenant_id,
         Some(cid),
         "participant.role_changed",
         json!({ "to": "agent", "participant_id": ai_id }),
     )?;
+    if let Some(sid) = state
+        .store
+        .live_sessions_with_medium(tenant_id, cid, "voice")?
+        .into_iter()
+        .next()
+        .map(|s| s.id)
+    {
+        crate::vapi_voice::unmute_session(state, &sid).await;
+    }
     Ok(json!({
         "state": "returned_to_ai",
         "ai_participant_id": ai_id
