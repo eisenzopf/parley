@@ -58,12 +58,20 @@ export async function checkTelnyxSms(config, { apiKey, fetchImpl = fetch } = {})
     problems.push('Submitted campaign still contains review placeholders');
   }
   if (!Array.isArray(keywords)) throw new Error('Invalid keyword response; configuration remains unverified');
+  for (const [op, field] of [['start', 'optin'], ['stop', 'optout'], ['info', 'help']]) {
+    const expected = (campaign?.[`${field}Keywords`] || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+    const rules = keywords.filter(rule => rule.country_code === 'US' && rule.op === op);
+    if (!expected.length || !campaign?.[`${field}Message`] || expected.some(keyword => !rules.some(rule =>
+      rule.resp_text === campaign[`${field}Message`] && rule.keywords?.some(k => k.toUpperCase() === keyword))))
+      problems.push(`US ${op} keyword responses do not match the approved campaign`);
+  }
   return {
     check: 'read-only Telnyx SMS configuration; no messages or mutations',
     configuration_ready: problems.length === 0,
     campaign_status: campaign?.campaignStatus ?? 'unknown',
     assignment_status: assignment?.assignmentStatus ?? 'unassigned',
     custom_keyword_responses: keywords.length,
+    keyword_configuration_matches_campaign: !problems.some(p => p.includes('keyword responses')),
     problems,
     unverified: ['recipient consent', 'branded keyword responses and opt-out behavior',
       'real signed delivery receipt', 'attributed human reply in the same Conversation'],

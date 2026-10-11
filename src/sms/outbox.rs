@@ -30,6 +30,27 @@ pub fn spawn(state: AppState) {
                 );
                 continue;
             } else {
+                if let Err(error) = super::enrollment::authorize(
+                    &state.config,
+                    &delivery.sender_address,
+                    &delivery.recipient_address,
+                    &delivery.body,
+                ) {
+                    let _ = state.store.update_conference_delivery(
+                        &delivery.tenant_id,
+                        &delivery.id,
+                        None,
+                        "failed",
+                        Some(&error.detail),
+                    );
+                    crate::events::publish(
+                        &state,
+                        &delivery.tenant_id,
+                        Some(&delivery.conversation_id),
+                        "message.delivery",
+                    );
+                    continue;
+                }
                 tokio::time::timeout(
                     std::time::Duration::from_secs(20),
                     super::telnyx::send_live_from(

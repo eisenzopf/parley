@@ -1,3 +1,4 @@
+pub mod enrollment;
 pub mod fake;
 pub mod outbox;
 pub mod telnyx;

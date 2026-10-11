@@ -10,9 +10,15 @@ try {
     const members = (await client.snapshot(bundle.cid)).participants;
     for (const role of ['owner', 'companion', 'booker', 'organizer']) {
       const found = members.filter(p => p.role === role);
-      if (found.length !== 1 || (mode !== 'voice-only' && !found[0].sms)) problems.push(`${role}: one participant${mode === 'voice-only' ? '' : ' with an SMS endpoint'} required`);
+      const requiresSms = mode === 'local' || (mode === 'live' && ['owner', 'organizer'].includes(role));
+      if (found.length !== 1 || (requiresSms && !found[0].sms)) problems.push(`${role}: one participant${requiresSms ? ' with an SMS endpoint' : ''} required`);
+      if (mode === 'live' && found.length === 1 && found[0].sms && !payload.sms_eligibility?.some(e => e.participant_id === found[0].participant_id && e.eligible === true))
+        problems.push(`${role}: reviewed web enrollment required`);
       if (mode === 'voice-only' && found.some(p => p.sms)) problems.push(`${role}: remove SMS endpoints from the voice-only roster`);
     }
+    const phones = members.filter(m => m.role !== 'assistant' && m.sms).map(m => m.sms);
+    if (mode === 'live' && new Set(phones).size !== phones.length)
+      problems.push('SMS endpoints must be distinct for attributed replies');
     if (mode === 'live' || mode === 'voice-only') {
       if (mode === 'live' && payload.capabilities?.sms_mode !== 'telnyx') problems.push('Server SMS mode is not Telnyx');
       for (const capability of [...(mode === 'live' ? ['sms_configured'] : []), 'voice', 'assistant_voice', 'browser_handoff']) {

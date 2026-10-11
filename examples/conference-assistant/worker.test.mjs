@@ -508,3 +508,16 @@ test('retry planning identifies a newer owner task despite a later assistant fai
   assert.equal(context.latest_voice_failure.seq, 1);
   assert.equal(context.events.length, 4, 'all original history remains available');
 });
+
+test('full flow final updates use only provisioned SMS routes and keep other participants in chat', () => {
+  const worker = new ConferenceWorker({ cid: 'conv_enrolled', client: {
+    command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
+  }, storage: {} });
+  worker.members = ['owner', 'companion', 'booker', 'organizer'].map(role => ({ role, participant_id: role,
+    ...(['owner', 'organizer'].includes(role) ? { sms: '+14155550101' } : {}) }));
+  worker.state = { cursor: 10, approved: { proposal_id: 'p1' } };
+  const batch = worker.prepare({ actions: [{ type: 'final_updates', proposal_id: 'p1',
+    updates: worker.members.map(m => ({ to: m.participant_id, body: 'Requested sandbox plan confirmed.' })) }] });
+  assert.deepEqual(batch.requests.map(r => r.payload.delivery), ['sms', 'chat', 'chat', 'sms']);
+  assert.ok(batch.requests.filter(r => r.payload.delivery === 'sms').every(r => r.payload.body.startsWith('Rudeless Thelve: [Sandbox arrangements]') && r.payload.body.endsWith('Reply STOP to opt out.')));
+});

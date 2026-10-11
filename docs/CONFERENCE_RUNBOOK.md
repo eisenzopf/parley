@@ -1,7 +1,7 @@
 # Conference demo runbook
 
 Current voice-only rehearsal: [steps and operator setup](CONFERENCE_VOICE_REHEARSAL.md).
-SMS is deferred while the campaign is under review; the organizer is called directly.
+The carrier-approved full flow uses enrolled SMS recipients. Voice-only mode remains available for rehearsals that defer SMS.
 
 Conference: October 13–15, 2026. Freeze the release on October 11 and rehearse
 October 12. The exact speaking slot and demo duration are still unconfirmed.
@@ -355,8 +355,10 @@ replanning. Observed human speech start/stop and final transcript events also
 delay planning until speech stops and 1,500 ms of observed quiet has elapsed.
 These checks reduce premature decisions on fragmented voice transcripts.
 
-Use a private roster with the four consenting people's SMS numbers. Give the
-booker and organizer SIP trunk routes to their telephone numbers. The confirmed
+Use a private roster with SMS endpoints only for recipients who personally enrolled
+at `https://rudeless.ai/sms` and whose requested task was reviewed. The full flow
+requires enrolled owner and organizer SMS routes; companion and booker may have
+chat-only final updates. Give the booker and organizer SIP routes to their voice endpoints. The confirmed
 booker has PSTN only, so both live calls use Telnyx; a trunk SIP URI does not make
 either participant a native SIP user. The four-role private draft roster is
 `var/conference/live/contacts.live.draft.json`. Contact routes are configured,
@@ -406,7 +408,8 @@ This performs six GET requests against Telnyx. It requires an active two-way
 sender on the expected messaging profile, a real carrier-approved campaign,
 completed `ASSIGNED` linkage, an enabled profile and the exact callback URL.
 Known draft placeholders in the submitted workflow or HELP response also fail
-the check. Pending approval or assignment is a stop condition; buying an active
+the check. US STOP, HELP and START/UNSTOP keyword rules must match the approved
+campaign's exact messages and keywords. Pending approval or assignment is a stop condition; buying an active
 number does not establish messaging readiness. This command never buys a number,
 assigns a campaign, changes the sender, sends a message or tests a call. Output
 omits phone numbers, provider IDs, callback URLs, credentials and provider bodies.
@@ -419,6 +422,64 @@ Telnyx documents default STOP/UNSUBSCRIBE blocking and START unblocking across
 the entire profile; custom HELP and subscription responses need separate
 configuration and an actual test. See [Telnyx keyword behavior](https://developers.telnyx.com/docs/messaging/messages/advanced-opt-in-out)
 and [number assignment status](https://support.telnyx.com/en/articles/11072276-10dlc-number-assignment-status).
+
+
+### Live SMS enrollment and approved message framing
+
+The server requires `PARLEY_SMS_ENROLLMENT_PATH` and `PARLEY_SMS_CAMPAIGN_ID`
+for live SMS. The enrollment file is private, readable only by the service and
+operators. It is an operator-reviewed record of public-form enrollment, not a
+replacement signup method and not proof that the form database was queried.
+Record the real source and evidence; never fabricate a form timestamp. Its shape is:
+
+```json
+{
+  "version": 1,
+  "source": "https://rudeless.ai/sms",
+  "sender_number": "+14155550000",
+  "campaign_id": "the-approved-campaign-id",
+  "recipients": [{
+    "number": "+14155550101",
+    "web_enrollment_confirmed": true,
+    "reviewed_at": "2026-10-10T19:00:00Z",
+    "evidence": "Describe the recipient's enrollment confirmation and reviewed requested task",
+    "revoked": false
+  }]
+}
+```
+
+These example numbers are fixtures. Save real records outside tracked source and
+replace the file atomically after reviewing enrollment or withdrawing approval.
+Missing, malformed, wrong-campaign, wrong-sender, unreviewed or revoked entries
+block live SMS before enqueue and again before provider submission. A changed
+review rejects queued work as failed without submitting it. Provider submission
+with an ambiguous outcome still requires reconciliation; do not resend blindly.
+Telnyx continues to enforce profile-wide STOP blocks. Updating enrollment cannot
+clear those blocks. START/UNSTOP restores a previous provider subscription and
+cannot create an initial enrollment in Parley.
+
+All coordination questions and approved final SMS use `Rudeless Thelve:` branding
+and `Reply STOP to opt out.` Requests stay within the approved customer-care
+campaign: requested task/demo progress, choices, clarification, confirmations
+and completion, without marketing or consent on another person's behalf. The
+worker adds the framing and the server rejects messages without it. Final updates
+still require authoritative owner approval. Each of the four human roles gets an
+individual update; roles without SMS endpoints get Conversation chat. Chat
+acceptance is displayed separately from SMS sent and carrier delivered states.
+
+Start a fresh idle full-mode worker only after both configuration gates pass:
+
+```sh
+node scripts/preflight-telnyx-sms.mjs var/conference/live/sender-config.json
+bash scripts/preflight-conference.sh var/conference/<cid>/provisioned.json live
+node scripts/start-conference-worker.mjs var/conference/<cid>/provisioned.json full var/conference/live/sender-config.json
+```
+
+The worker launcher rechecks carrier assignment, exact keyword configuration,
+server-reviewed SMS eligibility and distinct recipient routes. It receives only
+its scoped Conversation credential; carrier and host credentials stay with the
+operator/server. Connect the owner page and select **Start coordinating** when
+participants are ready. Preparation and an idle worker place no calls or texts.
 
 The SMS webhook acknowledges provider-classified keyword messages separately
 from task replies. It reads `autoresponse_type` from the original payload only

@@ -121,3 +121,15 @@ test('only an assistant invitation for the current live organizer call enables b
   add('session.ended', { sid: 'organizer-call', state: 'ended' });
   invitation('assistant', 'organizer-call', 'organizer-leg'); assert.equal(model.browserInvitation, null, 'late invitation cannot revive an ended call');
 });
+
+test('mixed final updates preserve chat acceptance separately from carrier delivery', () => {
+  const { model, add } = fixture();
+  add('message.accepted', { from: 'assistant', to: ['owner'], delivery: 'chat', content_type: 'application/json', body: JSON.stringify({ type: 'travel.proposal', id: 'p1' }) });
+  add('message.accepted', { from: 'owner', to: ['assistant'], delivery: 'chat', content_type: 'application/json', body: JSON.stringify({ type: 'travel.approval', version: 1, approved: true, proposal_id: 'p1' }) });
+  add('message.accepted', { msg_id: 'msg_owner', from: 'assistant', to: ['owner'], delivery: 'sms', body: 'Rudeless Thelve: [Sandbox arrangements] Updated. Reply STOP to opt out.', deliveries: [{ id: 'd_owner', participant_id: 'owner', state: 'delivered' }] });
+  add('message.accepted', { msg_id: 'msg_booker', from: 'assistant', to: ['booker'], delivery: 'chat', body: '[Sandbox arrangements] Updated.' });
+  const updates = model.finalUpdates();
+  assert.equal(updates.find(u => u.member.role === 'owner').delivery.state, 'delivered');
+  assert.ok(updates.find(u => u.member.role === 'booker').chat);
+  assert.equal(updates.find(u => u.member.role === 'booker').delivery, undefined);
+});

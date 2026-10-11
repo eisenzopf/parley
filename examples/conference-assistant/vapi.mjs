@@ -24,6 +24,7 @@ Allowed actions:
   This creates a proposal addressed to the owner; it does not book anything.
 - {"type":"final_updates", "proposal_id":"approved proposal ID", "updates":[{"to":"participant ID","body":"individual update"}]}
   Exactly one update each for owner, companion, booker, organizer. Only after authoritative owner approval.
+  The worker uses SMS only for enrolled SMS endpoints; participants without an SMS channel receive chat updates.
 - {"type":"complete_voice_rehearsal", "proposal_id":"approved proposal ID"}
   Only in demo_mode voice-only, after owner approval. Records completion to the owner in chat; SMS stays deferred.
 - {"type":"call_participant", "to":"participant ID", "purpose":"specific task and relevant known facts for this call"}
@@ -115,6 +116,11 @@ An empty actions array means wait for new information. Never resubmit an already
 A newly authorized retry is a NEW call with a new Session, even when its participant and purpose match
 an earlier failed call. That is permitted after a later owner coordination/retry request.
 Keep SMS concise; do not disclose one participant's private details to others unnecessarily.
+Live SMS is limited to each recipient's own enrolled, reviewed task or requested demo.
+Use the approved Rudeless Thelve customer-care pattern: requested-task progress, scheduling
+choices, clarification, confirmations and completion. Never send marketing or enroll another person.
+The worker adds Rudeless Thelve branding and the STOP disclosure to every SMS.
+STOP/HELP/START are handled by the carrier; never respond to these keywords or treat START as initial consent.
 Never output phone numbers, URLs, credentials, arbitrary RPC operations, or new recipients as routing targets.`;
 
 export class VapiPlanner {

@@ -480,7 +480,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
     assert!(deliveries.iter().all(|d| d.state == "sent"));
     let finals: Vec<_> = deliveries
         .iter()
-        .filter(|d| d.body.starts_with("[Sandbox arrangements]"))
+        .filter(|d| d.body.starts_with("Rudeless Thelve: [Sandbox arrangements]"))
         .collect();
     assert_eq!(finals.len(), if voice_only { 0 } else { 4 });
     for member in &members[..4] {

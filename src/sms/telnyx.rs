@@ -14,6 +14,7 @@ pub async fn send_live(state: &AppState, to: &str, body: &str) -> Result<String>
 }
 
 pub async fn send_live_from(state: &AppState, from: &str, to: &str, body: &str) -> Result<String> {
+    super::enrollment::authorize(&state.config, from, to, body)?;
     if from.is_empty() {
         return Err(ApiError::bad_request(
             "configured SMS sender number required",

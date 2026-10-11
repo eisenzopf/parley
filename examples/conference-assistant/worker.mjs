@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { UctpClient, UctpError } from '../../clients/uctp-js/client.mjs';
 import { VapiPlanner } from './vapi.mjs';
+import { campaignSms } from './sms.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const text = (value, limit = 16000) => typeof value === 'string' && value.trim().length > 0 && value.length <= limit;
@@ -223,6 +224,7 @@ export class ConferenceWorker {
       if (!Array.isArray(to) || !to.length || to.length > 32 || new Set(to).size !== to.length || to.some(id => !known.has(id))) throw new Error('Invalid recipients');
       if (!text(body) || !['chat', 'sms'].includes(delivery)) throw new Error('Invalid message');
       if (this.mode === 'voice-only' && delivery === 'sms') throw new Error('SMS is deferred in voice-only mode; no text messages may be submitted');
+      if (delivery === 'sms') body = campaignSms(body);
       const suffix = `${seed}_${batch.requests.length}`;
       batch.requests.push(this.client.command('message.send', this.cid, { msg_id: `msg_${suffix}`, to, body, delivery, content_type }, { id: `env_${suffix}` }));
     };
@@ -246,7 +248,8 @@ export class ConferenceWorker {
           return matches[0].participant_id;
         });
         if (!Array.isArray(action.updates) || action.updates.length !== 4 || new Set(action.updates.map(u => u.to)).size !== 4 || action.updates.some(u => !required.includes(u.to) || !text(u.body, 1200))) throw new Error('Four individually addressed final updates required');
-        for (const update of action.updates) message([update.to], `[Sandbox arrangements] ${update.body}`, 'sms');
+        for (const update of action.updates) message([update.to], `[Sandbox arrangements] ${update.body}`,
+          this.members.find(m => m.participant_id === update.to)?.sms ? 'sms' : 'chat');
         batch.completedProposal = action.proposal_id;
       } else if (action.type === 'complete_voice_rehearsal') {
         if (this.mode !== 'voice-only' || !this.state.approved || action.proposal_id !== this.state.approved.proposal_id

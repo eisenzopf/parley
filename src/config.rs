@@ -56,6 +56,11 @@ pub struct Config {
     pub telnyx_from: String,
     #[serde(default)]
     pub telnyx_messaging_profile_id: String,
+    /// Private, operator-reviewed web enrollment records for live SMS.
+    #[serde(default)]
+    pub sms_enrollment_path: String,
+    #[serde(default)]
+    pub sms_campaign_id: String,
     #[serde(default)]
     pub cloudflare_key: String,
     #[serde(default)]
@@ -101,6 +106,8 @@ impl Default for Config {
             telnyx_public_key: String::new(),
             telnyx_from: String::new(),
             telnyx_messaging_profile_id: String::new(),
+            sms_enrollment_path: String::new(),
+            sms_campaign_id: String::new(),
             cloudflare_key: String::new(),
             cloudflare_account_id: String::new(),
             public_hostname: String::new(),
@@ -316,6 +323,12 @@ fn overlay_env(cfg: &mut Config) {
     }
     if let Some(v) = first_env(&["PARLEY_TELNYX_PROFILE", "TELNYX_MESSAGING_PROFILE_ID"]) {
         cfg.telnyx_messaging_profile_id = v;
+    }
+    if let Some(v) = first_env(&["PARLEY_SMS_ENROLLMENT_PATH"]) {
+        cfg.sms_enrollment_path = v;
+    }
+    if let Some(v) = first_env(&["PARLEY_SMS_CAMPAIGN_ID"]) {
+        cfg.sms_campaign_id = v;
     }
     if let Some(v) = first_env(&[
         "PARLEY_CLOUDFLARE_KEY",

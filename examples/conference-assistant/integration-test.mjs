@@ -57,7 +57,7 @@ try {
   const history = await assistant.history(fixture.cid);
   const sms = history.filter(m => m.medium === 'sms');
   assert.equal(sms.length, 4); assert.equal(new Set(sms.map(m => m.id)).size, 4);
-  assert.ok(sms.every(m => m.body.startsWith('[Sandbox arrangements]')));
+  assert.ok(sms.every(m => m.body.startsWith('Rudeless Thelve: [Sandbox arrangements]') && m.body.endsWith('Reply STOP to opt out.')));
   assert.ok(trace.filter(t => t.frame.type === 'message.send').every(t => t.frame.cid === fixture.cid));
   assert.ok(!JSON.stringify(trace).includes(fixture.assistant_token));
   // With UCTP disconnected, no provider-side fallback is invoked.

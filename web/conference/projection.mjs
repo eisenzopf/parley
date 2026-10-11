@@ -92,9 +92,12 @@ export class ConversationProjection {
       const deliveries = [...this.deliveries.values()].filter(d => {
         const message = this.messages.get(d.msg_id);
         return d.participant_id === member.participant_id && message?.from === this.assistant
-          && message.seq > this.approval.seq && message.body?.startsWith('[Sandbox arrangements]');
+          && message.seq > this.approval.seq && /^(Rudeless Thelve: )?\[Sandbox arrangements\]/.test(message.body || '');
       });
-      result.push({ member, delivery: deliveries.at(-1) });
+      const chat = [...this.messages.values()].filter(message => message.delivery === 'chat'
+        && message.to?.includes(member.participant_id) && message.from === this.assistant
+        && message.seq > this.approval.seq && message.body?.startsWith('[Sandbox arrangements]')).at(-1);
+      result.push({ member, delivery: deliveries.at(-1), chat });
     }
     return result;
   }

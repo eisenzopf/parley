@@ -46,7 +46,7 @@ $('setup').addEventListener('submit', async event => {
     $('status').textContent = voiceOnly ? 'Connected · Voice rehearsal · SMS deferred' : first.capabilities.sms_mode === 'fake' ? 'Connected · SMS fixture' : 'Connected · Telnyx SMS';
     $('status').className = `status ${first.capabilities.sms_mode === 'fake' ? 'fake' : 'ready'}`;
     $('assistant-state').textContent = `${assistant.name} · waiting for external worker activity`;
-    $('correlation').textContent = `CONVERSATION  ${cid}`; $('send').disabled = false;
+    $('correlation').textContent = `CONVERSATION  ${cid}`;
     consume(first); renderPeople();
     if (!polling) { polling = true; poll(); }
   } catch (e) { client?.close(); error(e); }
@@ -66,11 +66,17 @@ async function poll() {
 
 function consume(snapshot) {
   capabilities = snapshot.capabilities;
+  const needsSmsReview = !voiceOnly && capabilities.sms_enrollment_required;
+  const eligible = new Set((snapshot.sms_eligibility || []).filter(e => e.eligible).map(e => e.participant_id));
+  const smsReady = !needsSmsReview || (['owner', 'organizer'].every(role => snapshot.participants.some(m => m.role === role && m.sms && eligible.has(m.participant_id)))
+    && snapshot.participants.filter(m => m.sms).every(m => eligible.has(m.participant_id)));
+  $('send').disabled = snapshot.state === 'closed' || !smsReady;
   const build = capabilities.implementation;
   $('build-info').textContent = build
     ? `Rvoip ${stageText(build.rvoip_baseline)}${build.rvoip_patched ? ' + conference patches' : ''} · ${stageText(build.profile)} · UCTP v${build.envelope_version} / ${stageText(build.control_transport)}${build.experimental ? ' · experimental' : ''}`
     : 'Server build details unavailable';
   $('status').textContent = voiceOnly ? 'Connected · Voice rehearsal · SMS deferred' : snapshot.capabilities.sms_mode === 'fake' ? 'Connected · SMS fixture' : 'Connected · Telnyx SMS';
+  if (!smsReady) $('status').textContent = 'Connected · SMS enrollment review required before Start';
   for (const event of snapshot.events) {
     if (event.seq <= cursor) continue;
     if (!projection.apply(event)) continue;
@@ -201,7 +207,9 @@ function renderStage(connected) {
   $('mission-approval').textContent = projection.approval ? 'Owner approved sandbox arrangements' : projection.proposal ? 'Waiting for owner approval' : 'Arrangements still being gathered';
   const updates = projection.finalUpdates();
   const count = states => updates.filter(u => states.includes(u.delivery?.state)).length;
-  $('mission-updates').textContent = voiceOnly ? projection.voiceComplete ? 'Voice rehearsal complete · SMS deferred' : 'SMS deferred · voice rehearsal only' : `${count(['sent', 'delivered'])}/4 final updates sent · ${count(['delivered'])}/4 delivered`;
+  const smsTotal = updates.filter(u => u.member.sms).length;
+  const chats = updates.filter(u => u.chat && !u.member.sms).length;
+  $('mission-updates').textContent = voiceOnly ? projection.voiceComplete ? 'Voice rehearsal complete · SMS deferred' : 'SMS deferred · voice rehearsal only' : `${count(['sent', 'delivered'])}/${smsTotal} final updates sent · ${count(['delivered'])}/${smsTotal} delivered${smsTotal < 4 ? ` · ${chats}/${4 - smsTotal} chat updates accepted` : ''}`;
   const uncertain = count(['unknown', 'failed']);
   $('mission-update-note').textContent = voiceOnly ? 'Text messages resume after campaign approval and delivery checks.' : uncertain ? `${uncertain} update(s) need attention` : projection.approval ? 'Sent and delivered are separate provider outcomes.' : 'Final updates wait for owner approval.';
   $('facts').replaceChildren();

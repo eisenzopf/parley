@@ -83,6 +83,7 @@ impl Commands {
             },
             "operations": operations, "delivery": ["chat", "sms"],
             "sms_mode": if self.state.config.vapi_chat_mode == "fake" { "fake" } else { "telnyx" },
+            "sms_enrollment_required": self.state.config.vapi_chat_mode != "fake",
             "sms_configured": self.state.config.vapi_chat_mode == "fake" ||
                 (self.state.telnyx.is_some() && self.state.telnyx_verifier.is_some() && !self.state.config.telnyx_from.is_empty()),
             "voice": voice,
@@ -90,6 +91,17 @@ impl Commands {
             "browser_handoff": cfg!(feature = "media-webrtc"),
             "phone_handoff": cfg!(feature = "media-webrtc") && voice,
         })
+    }
+
+    fn sms_eligibility(&self, tenant: &str, cid: &str) -> Result<Vec<Value>> {
+        Ok(self.state.store.conference_members(tenant, cid)?.into_iter()
+            .filter(|m| m.role != "assistant").map(|m| {
+                let eligible = m.sms.as_deref().is_some_and(|to| crate::sms::enrollment::authorize(
+                    &self.state.config, &self.state.config.telnyx_from, to,
+                    "Rudeless Thelve: Requested demo coordination. Reply STOP to opt out.",
+                ).is_ok());
+                json!({"participant_id":m.participant_id,"role":m.role,"eligible":eligible})
+            }).collect())
     }
 
     fn cached(
@@ -231,7 +243,8 @@ impl Commands {
                     return Err(ApiError::forbidden("preflight requires owner or assistant"));
                 }
                 let readiness = self.state.store.conference_preflight(&tenant, cid)?;
-                Ok(UctpEnvelope::new(MessageType::Ack, json!({"profile":PROFILE,"readiness":readiness,"capabilities":self.capabilities()})).with_cid(cid))
+                let sms_eligibility = self.sms_eligibility(&tenant, cid)?;
+                Ok(UctpEnvelope::new(MessageType::Ack, json!({"profile":PROFILE,"readiness":readiness,"capabilities":self.capabilities(),"sms_eligibility":sms_eligibility})).with_cid(cid))
             }
             MessageType::ConversationClose => {
                 if member.role != "owner" || request.sid.is_some() || request.connid.is_some() {
@@ -550,6 +563,16 @@ impl Commands {
                         "only owner or delegated assistant can send outbound SMS",
                     ));
                 }
+                if medium == "sms" {
+                    for recipient in &recipients {
+                        crate::sms::enrollment::authorize(
+                            &self.state.config,
+                            &self.state.config.telnyx_from,
+                            recipient.sms.as_deref().unwrap_or(""),
+                            required_string(&request.payload, "body")?,
+                        )?;
+                    }
+                }
                 let msg_id = required_string(&request.payload, "msg_id")?;
                 if msg_id.len() > 128
                     || !msg_id
@@ -633,7 +656,8 @@ impl Commands {
                 Ok(UctpEnvelope::new(
                     MessageType::Unknown("conversation.snapshot".into()),
                     json!({"profile":PROFILE,"state":if closed {"closed"} else {"open"},"participants":members,"events":events,"cursor":cursor,
-                        "capabilities":self.capabilities(),"subscription":subscription
+                        "capabilities":self.capabilities(),"subscription":subscription,
+                        "sms_eligibility":if member.observes_all() { self.sms_eligibility(&tenant,cid)? } else { Vec::new() }
                     }),
                 )
                 .with_cid(cid))

@@ -1,7 +1,36 @@
 # Conference implementation evidence
 
 Current voice-only rehearsal: [steps and operator setup](CONFERENCE_VOICE_REHEARSAL.md).
-SMS is deferred while the campaign is under review; the organizer is called directly.
+Voice-only evidence below remains historical. The approved SMS flow uses reviewed public-form enrollments.
+
+## Approved SMS integration — October 10, 2026
+
+Telnyx reports the real campaign as `MNO_PROVISIONED`. The sender assignment was
+completed as `ASSIGNED`, and the US STOP, HELP and START/UNSTOP rules match the
+campaign's exact approved text. The read-only provider configuration check passes.
+Real traffic results must be checked independently; configuration does not prove delivery.
+
+The user explicitly confirmed public-form enrollment for the owner and current
+organizer stand-in. Only these two mobile endpoints are activated for SMS; Alex
+and the Thelve booker use chat for final updates. The booker's Thelve voice route
+and the organizer's latest stand-in voice route are preserved. No enrollment is
+inferred from the old roster, and the obsolete booker SMS route is not reused for
+the organizer. Private reviewed records preserve the actual user confirmation
+as evidence, without claiming direct access to the signup database.
+
+Live admission now checks reviewed enrollment and approved branding before
+queueing and before sending. The full-mode launcher also checks provider
+assignment, keyword rules and server-reviewed routes. The assistant still uses
+UCTP alone for communications. Approval produces four individual final updates,
+using SMS where enrolled and chat elsewhere; the stage distinguishes chat
+acceptance from provider sent and delivered states. The owner must press Start
+before any live coordination begins. Live delivery and attributed human replies
+remain unverified until that run produces actual signed events.
+
+Validation: 68 ordinary Rust tests, 60 JavaScript checks, three kit-boundary tests,
+the browser suite and the two-SMS/two-chat browser case pass. The complete local
+SIP/browser/phone-handoff scenario also passes with the new branded final SMS.
+The pinned dependency fingerprints and staged secret scan pass. Deployment checks and fresh idle worker status are kept in private evidence.
 
 ## Human browser and phone handoff — October 6, 2026, 9:55 PM
 

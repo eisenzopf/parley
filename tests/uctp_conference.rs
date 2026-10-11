@@ -156,6 +156,38 @@ async fn wait_sent(app: &App, cid: &str, count: usize) {
 }
 
 #[tokio::test]
+async fn live_sms_rejects_unreviewed_recipients_before_enqueue() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path());
+    cfg.vapi_chat_mode = "live".into();
+    cfg.sms_campaign_id = "approved-test-campaign".into();
+    cfg.sms_enrollment_path = dir.path().join("enrollments.json").display().to_string();
+    std::fs::write(&cfg.sms_enrollment_path, json!({"version":1,
+        "source":"https://rudeless.ai/sms","sender_number":cfg.telnyx_from,
+        "campaign_id":cfg.sms_campaign_id,"recipients":[{"number":"+14155550101",
+        "web_enrollment_confirmed":true,"reviewed_at":"2026-10-10T19:00:00Z",
+        "evidence":"Recipient's web enrollment reviewed for the requested demo"}]}).to_string()).unwrap();
+    let app = App::new(cfg.clone(), Store::open(&cfg).unwrap()).unwrap();
+    let url = url::Url::parse(&format!("ws://{}", app.start_uctp().await.unwrap())).unwrap();
+    let mut admin = Peer::connect(&url, "test-admin").await;
+    let (cid, members) = provision(&mut admin).await;
+    let mut worker = member_peer(&app, &url, &cid, &members[4]).await;
+    let body = "Rudeless Thelve: Your requested demo is confirmed. Reply STOP to opt out.";
+    for (mid, recipients, content) in [
+        ("msg_unreviewed", vec![members[1].participant_id.clone()], body),
+        ("msg_unbranded", vec![members[0].participant_id.clone()], "Unbranded update"),
+        ("msg_mixed", vec![members[0].participant_id.clone(),members[1].participant_id.clone()], body),
+    ] {
+        let reply = worker.request(message(&cid, mid, recipients, content)).await;
+        assert_eq!(reply.msg_type, MessageType::Error, "{reply:?}");
+        assert!(app.state.store.conference_deliveries("ten_local", &cid).unwrap().is_empty());
+    }
+    let preflight = worker.request(command(MessageType::Unknown("conversation.preflight".into()), Some(&cid), json!({}))).await;
+    let eligibility = preflight.payload["sms_eligibility"].as_array().unwrap();
+    assert_eq!(eligibility.iter().filter(|row| row["eligible"] == true).count(), 1);
+}
+
+#[tokio::test]
 async fn four_recipients_and_reply_use_one_conversation_without_voice() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = config(dir.path());

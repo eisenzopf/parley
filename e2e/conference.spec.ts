@@ -2,15 +2,16 @@ import { test, expect } from '@playwright/test';
 import { UctpClient } from '../clients/uctp-js/client.mjs';
 import { ConferenceWorker } from '../examples/conference-assistant/worker.mjs';
 
-test('conference task, owner approval, four SMS updates, and actual worker request reveal', async ({ page, request }) => {
+for (const smsRecipients of [4, 2]) {
+test(`conference task, owner approval, ${smsRecipients} SMS updates, and actual worker request reveal`, async ({ page, request }) => {
   const admin = new UctpClient('ws://127.0.0.1:17443', 'dev-only');
   let assistant: UctpClient | undefined;
   try {
     await admin.connect();
     const created = await admin.request(admin.command('conversation.create', null, { participants: [
       { alias: 'jonathan', name: 'Jonathan', role: 'owner', sms: '+14155550101' },
-      { alias: 'alex', name: 'Alex', role: 'companion', sms: '+14155550102' },
-      { alias: 'booker', name: 'Travel booker', role: 'booker', sms: '+14155550103' },
+      { alias: 'alex', name: 'Alex', role: 'companion', ...(smsRecipients === 4 ? { sms: '+14155550102' } : {}) },
+      { alias: 'booker', name: 'Travel booker', role: 'booker', ...(smsRecipients === 4 ? { sms: '+14155550103' } : {}) },
       { alias: 'organizer', name: 'Organizer', role: 'organizer', sms: '+14155550104' },
       { alias: 'assistant', name: 'Vapi assistant', role: 'assistant' },
     ] }));
@@ -46,8 +47,8 @@ test('conference task, owner approval, four SMS updates, and actual worker reque
     await page.getByRole('button', { name: 'Approve these sandbox arrangements' }).click();
     await expect.poll(async () => (await assistant!.history(cid)).length).toBe(3);
     await worker.step();
-    await expect(page.locator('.event').filter({ hasText: /SMS sent/ })).toHaveCount(4);
-    await expect(page.locator('#mission-updates')).toHaveText('4/4 final updates sent · 0/4 delivered');
+    await expect(page.locator('.event').filter({ hasText: /SMS sent/ })).toHaveCount(smsRecipients);
+    await expect(page.locator('#mission-updates')).toHaveText(smsRecipients === 4 ? '4/4 final updates sent · 0/4 delivered' : '2/2 final updates sent · 0/2 delivered · 2/2 chat updates accepted');
     await expect(page.locator('[data-edge=rtp]')).toHaveAttribute('data-state', 'idle');
     const smsEvent = page.locator('.event').filter({ hasText: /Vapi assistant → Organizer · sms accepted/ });
     await smsEvent.click();
@@ -59,7 +60,7 @@ test('conference task, owner approval, four SMS updates, and actual worker reque
     await expect(page.locator('#evidence')).not.toContainText(ownerToken);
     await expect(page.locator('#people .person')).toHaveCount(4);
     await page.setViewportSize({ width: 1600, height: 1100 });
-    await page.screenshot({ path: 'test-results/conference-stage.png', fullPage: true });
+    await page.screenshot({ path: `test-results/conference-stage-${smsRecipients}-sms.png`, fullPage: true });
     await page.locator('#show-timeline').click();
     await expect(page.locator('#network-title')).toContainText('One Conversation');
     await page.locator('#community').evaluate((element: HTMLDetailsElement) => { element.open = true; });
@@ -77,3 +78,5 @@ test('conference task, owner approval, four SMS updates, and actual worker reque
 
   } finally { assistant?.close(); admin.close(); }
 });
+
+}
