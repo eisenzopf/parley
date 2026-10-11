@@ -73,7 +73,7 @@ UCTP events as the assistant places calls and connections change.
    flight details and read the complete option back. No real change is booked.
    Let David finish his spoken confirmation, then say: “Thank you, goodbye.”
    David gives a brief goodbye and hangs up after his closing audio finishes;
-   the booker does not have to hang up or wait for a timeout. If the booker says
+   the booker does not have to hang up or wait for a timeout. If an answering AI or receptionist cannot supply the facts or connect the intended person, David asks for a transfer once, invokes `finish_call` with reason `unavailable`, and stays silent after the tool’s brief goodbye. The worker ends that Session without waiting for the other assistant to stop talking, then reports the incomplete task to the owner. It does not retry or advance without a new owner request. If the booker says
    goodbye before supplying all the facts, David ends respectfully and tells
    Jonathan what is missing instead of advancing with an invented itinerary.
 3. Once the booker's Session ends, David places a **new call** to the organizer

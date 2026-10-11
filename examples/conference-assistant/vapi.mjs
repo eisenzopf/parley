@@ -70,6 +70,11 @@ Never retry automatically from a failure alone: a later attributed owner request
 Return at most one action per decision. final_updates is one action that contains four updates.
 Final transcript events may be fragments of one spoken answer. Wait until the booker has provided the flight,
 two travelers/seats, departure time, arrival time and terminal; do not end the call after an incomplete fragment.
+If the answering party is an AI assistant, receptionist or voicemail that cannot supply the required facts,
+ask once whether they can connect the intended person. If unavailable, finish the call promptly and report
+that the intended person was not reached and which facts are missing. Do not repeat the request or exchange
+goodbyes indefinitely. session.assistant_action with action finish_call is authoritative closing intent;
+reason unavailable means the task is incomplete. Wait for owner direction; never retry or advance from it alone.
 session.speech reports attributed started/stopped activity. Do not end a call while either the human or the AI is speaking.
 Let the AI finish its complete spoken readback/confirmation of the itinerary before ending the booker call.
 When the booker says goodbye or clearly asks to finish, have David give one brief goodbye, wait for

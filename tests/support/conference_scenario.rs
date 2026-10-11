@@ -208,7 +208,13 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                                 if ws.send(Message::Text(json!({"type":"transcript","role":"user","transcriptType":"final","transcript":transcript}).to_string().into())).await.is_err(){break;}
                                 if index==1 {
                                     if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-browser-join","function":{"name":"request_browser_join","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
+                                } else {
+                                    if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-finish-call","function":{"name":"finish_call","arguments":"{\"reason\":\"completed\"}"}}]}).to_string().into())).await.is_err(){break;}
+                                    if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"started"}).to_string().into())).await.is_err(){break;}
                                 }
+                            }
+                            if index==0 && position==32000 {
+                                if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"stopped"}).to_string().into())).await.is_err(){break;}
                             }
                         },
                         frame=ws.next()=>match frame {
@@ -244,7 +250,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 let prompt = body["assistantOverrides"]["model"]["messages"][0]["content"].as_str().unwrap();
                 if n == 0 {
                     assert!(prompt.contains("When the reservationist says goodbye"));
-                    assert_eq!(body["assistantOverrides"]["model"]["tools"],json!([]));
+                    assert_eq!(body["assistantOverrides"]["model"]["tools"][0]["function"]["name"], "finish_call");
                 } else {
                     assert!(prompt.contains("invoke request_browser_join exactly once"));
                     assert_eq!(body["assistantOverrides"]["model"]["tools"][0]["function"]["name"],"request_browser_join");
@@ -252,6 +258,11 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                     assert!(body["assistantOverrides"]["model"]["tools"][0].get("server").is_none());
                     assert!(!prompt.contains("ask what the reservationist can offer"));
                 }
+                let finish = body["assistantOverrides"]["model"]["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "finish_call").unwrap();
+                assert_eq!(finish["async"], true);
+                assert_eq!(finish["messages"][0]["blocking"], true);
+                assert!(finish.get("server").is_none(), "only UCTP executes call termination");
+                assert!(prompt.contains("ask once whether they can connect you"));
                 assert!(n<2,"no duplicate provider calls");
                 axum::Json(json!({"id":format!("fixture-call-{n}"),"transport":{"websocketCallUrl":audio_url}}))
             }
@@ -480,7 +491,10 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
     assert!(deliveries.iter().all(|d| d.state == "sent"));
     let finals: Vec<_> = deliveries
         .iter()
-        .filter(|d| d.body.starts_with("Rudeless Thelve: [Sandbox arrangements]"))
+        .filter(|d| {
+            d.body
+                .starts_with("Rudeless Thelve: [Sandbox arrangements]")
+        })
         .collect();
     assert_eq!(finals.len(), if voice_only { 0 } else { 4 });
     for member in &members[..4] {

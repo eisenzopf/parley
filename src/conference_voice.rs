@@ -602,12 +602,13 @@ pub async fn attach_vapi(
         )));
     }
     let role_instructions = match target.role.as_str() {
-        "booker" => "State the traveler's known requested changes and ask what the reservationist can offer; the reservationist supplies flight availability and times. Read the offered details back and finish the confirmation. When the reservationist says goodbye or clearly ends the conversation, give one short goodbye and stop speaking. Do not ask further questions or restart the conversation after their goodbye. The external coordinator will hang up once your closing audio has finished. Respect their goodbye even when some itinerary facts are missing; never invent those facts.",
+        "booker" => "State the traveler's known requested changes and ask what the reservationist can offer; the reservationist supplies flight availability and times. Read the offered details back and finish the confirmation. When the reservationist says goodbye or clearly ends the conversation, give one short goodbye and stop speaking. Do not ask further questions or restart the conversation after their goodbye. Invoke finish_call with reason completed once your readback is finished, or participant_goodbye when they end early. The tool supplies your one closing goodbye; do not say another goodbye yourself. Respect their goodbye even when some itinerary facts are missing; never invent those facts.",
         "organizer" => "Give the confirmed itinerary from your call task and ask the organizer to confirm pickup and the meeting point. The organizer arranges ground logistics. Once pickup is confirmed, acknowledge it briefly and invoke request_browser_join exactly once. The tool announces that you are bringing Jonathan into this same call and asks the external coordinator to ring his browser. Merely saying you will bring him in does not invoke the tool. After invoking it, stop speaking and wait quietly; keep the call open. If the organizer has a question only Jonathan can answer, invite him to answer it. Do not speak on Jonathan's behalf, address him as if he has already joined, or claim the handoff has happened. The actual UCTP browser handoff is performed by the external coordinator and Jonathan.",
         _ => "Follow the task for this participant and acknowledge the facts they provide.",
     };
-    let prompt=format!("You are {}, Jonathan's AI travel coordination assistant. This is a conference demonstration; travel booking is sandbox only. You are the caller, speaking with {}. Your task for this call: {}. {} Record the facts they provide. Never claim a booking, SMS, human approval, or other external action occurred unless the supplied context says so. Use only the explicitly supplied tools; do not make independent phone calls. Keep this conversation concise and friendly. Keep the call open when the task says Jonathan will join. The external coordinator controls other communications and call termination through UCTP.",assistant.name,target.name,voice.purpose,role_instructions);
-    let tools = if target.role == "organizer" {
+    let finish_instructions = "If an answering AI, receptionist or voicemail cannot perform this task, ask once whether they can connect you to the intended person. If they cannot, decline further assistance and invoke finish_call with reason unavailable immediately. Do not repeat the task, negotiate with an incapable assistant, trade repeated goodbyes, or claim the task was completed. When someone explicitly ends the conversation, invoke finish_call with reason participant_goodbye. The tool speaks one brief goodbye; after invoking it remain silent, including if the other assistant responds. Never invoke finish_call during or after a successful Jonathan browser/phone handoff; he controls that call.";
+    let prompt=format!("You are {}, Jonathan's AI travel coordination assistant. This is a conference demonstration; travel booking is sandbox only. You are the caller, speaking with {}. Your task for this call: {}. {} {} Record the facts they provide. Never claim a booking, SMS, human approval, or other external action occurred unless the supplied context says so. Use only the explicitly supplied tools; do not make independent phone calls. Keep this conversation concise and friendly. Keep the call open when the task says Jonathan will join. The external coordinator controls other communications and call termination through UCTP.",assistant.name,target.name,voice.purpose,role_instructions,finish_instructions);
+    let mut tools = if target.role == "organizer" {
         json!([{
             "type":"function", "async":true,
             "function":{
@@ -620,6 +621,15 @@ pub async fn attach_vapi(
     } else {
         json!([])
     };
+    tools.as_array_mut().expect("voice tools array").push(json!({
+        "type":"function", "async":true,
+        "function":{
+            "name":"finish_call",
+            "description":"End this call after one brief goodbye when the task is completed, the answering party cannot help or transfer you, or they explicitly say goodbye. Invoke once, then stay silent. Never use after a human handoff. The coordinator ends only this Session.",
+            "parameters":{"type":"object","properties":{"reason":{"type":"string","enum":["completed","unavailable","participant_goodbye"]}},"required":["reason"],"additionalProperties":false}
+        },
+        "messages":[{"type":"request-start","content":"Thank you for your time. Goodbye.","blocking":true}]
+    }));
     let options=VapiCallOptions::new(VapiAssistant::saved_with_overrides(state.config.vapi_assistant_id.clone(),json!({
         "model":{"provider":"openai","model":"gpt-4o-mini","messages":[{"role":"system","content":prompt}],"tools":tools},
         "firstMessage":format!("Hello {}, I'm {}, Jonathan's AI assistant helping coordinate his conference travel. Is now a good time?",target.name,assistant.name),
@@ -673,15 +683,11 @@ pub async fn attach_vapi(
         &call.vapi_connection_id().to_string(),
         &call.bridge_id().to_string(),
     )?;
-    if target.role == "organizer" {
-        state.store.conference_voice_fact(
-            tenant,
-            &voice,
-            "session.assistant_actions",
-            json!({"sid":voice.session_id,"participant_id":voice.assistant_participant_id,
-                "actions":["request_browser_join"],"source":"vapi"}),
-        )?;
-    }
+    state.store.conference_voice_fact(
+        tenant, &voice, "session.assistant_actions",
+        json!({"sid":voice.session_id,"participant_id":voice.assistant_participant_id,
+            "actions":if target.role == "organizer" { vec!["request_browser_join", "finish_call"] } else { vec!["finish_call"] },"source":"vapi"}),
+    )?;
     state
         .vapi_calls
         .lock()
@@ -709,11 +715,16 @@ pub async fn attach_vapi(
                             let _=state.store.conference_voice_fact(&state.config.tenant_id,&voice,"session.transcript",json!({"sid":voice.session_id,"speaker":speaker,"text":text,"is_final":true,"source":"vapi"}));
                         }
                     }
-                    Ok(VapiEvent::ToolCall{event_type,payload}) if event_type=="tool-calls" && organizer_tool=>{
-                        for tool_call_id in browser_join_tool_calls(&payload) {
+                    Ok(VapiEvent::ToolCall{event_type,payload}) if event_type=="tool-calls"=>{
+                        for tool_call_id in browser_join_tool_calls(&payload).into_iter().filter(|_| organizer_tool) {
                             let _=state.store.conference_voice_fact(&state.config.tenant_id,&voice,"session.assistant_action",
                                 json!({"sid":voice.session_id,"participant_id":voice.assistant_participant_id,
                                     "action":"request_browser_join","tool_call_id":tool_call_id,"source":"vapi"}));
+                        }
+                        for (tool_call_id, reason) in finish_call_tool_calls(&payload) {
+                            let _=state.store.conference_voice_fact(&state.config.tenant_id,&voice,"session.assistant_action",
+                                json!({"sid":voice.session_id,"participant_id":voice.assistant_participant_id,
+                                    "action":"finish_call","reason":reason,"tool_call_id":tool_call_id,"source":"vapi"}));
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed)=>break,
@@ -769,9 +780,75 @@ fn browser_join_tool_calls(payload: &Value) -> Vec<&str> {
         .collect()
 }
 
+/// A provider tool may finish only its attached Session, with a bounded reason.
+fn finish_call_tool_calls(payload: &Value) -> Vec<(&str, String)> {
+    payload
+        .get("toolCallList")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|call| {
+            let id = call.get("id")?.as_str()?;
+            if id.is_empty()
+                || id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            {
+                return None;
+            }
+            let function = call.get("function")?;
+            if function.get("name")?.as_str()? != "finish_call" {
+                return None;
+            }
+            let arguments = function.get("arguments")?;
+            let parsed = if let Some(text) = arguments.as_str() {
+                serde_json::from_str::<Value>(text).ok()?
+            } else {
+                arguments.clone()
+            };
+            let args = parsed.as_object()?;
+            let reason = args.get("reason")?.as_str()?;
+            if args.len() != 1
+                || !matches!(reason, "completed" | "unavailable" | "participant_goodbye")
+            {
+                return None;
+            }
+            Some((id, reason.to_owned()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod voice_tool_tests {
     use super::*;
+    #[test]
+    fn finish_call_accepts_only_bounded_reasons_without_routing_arguments() {
+        let call = |args: Value| json!({"id":"call_finish-123","function":{"name":"finish_call","arguments":args}});
+        for reason in ["completed", "unavailable", "participant_goodbye"] {
+            for args in [
+                json!({"reason":reason}),
+                json!(format!(r#"{{"reason":"{reason}"}}"#)),
+            ] {
+                assert_eq!(
+                    finish_call_tool_calls(&json!({"toolCallList":[call(args)]})),
+                    vec![("call_finish-123", reason.to_owned())]
+                );
+            }
+        }
+        for args in [
+            json!({}),
+            json!({"reason":"unavailable","sid":"another-session"}),
+            json!({"reason":"anything"}),
+            json!(null),
+            json!("{"),
+            json!([]),
+        ] {
+            assert!(finish_call_tool_calls(&json!({"toolCallList":[call(args)]})).is_empty());
+        }
+        assert!(finish_call_tool_calls(&json!({"toolCallList":[{"id":"bad id","function":{"name":"finish_call","arguments":{"reason":"unavailable"}}}]})).is_empty());
+    }
+
     #[test]
     fn browser_join_accepts_only_valid_zero_argument_provider_calls() {
         let call = |name: &str, args: Value| json!({"id":"call_abc-123","function":{"name":name,"arguments":args}});

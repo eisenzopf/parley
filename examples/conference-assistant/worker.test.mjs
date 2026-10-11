@@ -521,3 +521,87 @@ test('full flow final updates use only provisioned SMS routes and keep other par
   assert.deepEqual(batch.requests.map(r => r.payload.delivery), ['sms', 'chat', 'chat', 'sms']);
   assert.ok(batch.requests.filter(r => r.payload.delivery === 'sms').every(r => r.payload.body.startsWith('Rudeless Thelve: [Sandbox arrangements]') && r.payload.body.endsWith('Reply STOP to opt out.')));
 });
+
+function finishFixture({ mode = 'full', tool = true } = {}) {
+  let now = 10000, saved = { cursor: 0, events: [], pending: null }, plans = 0;
+  const sent = [], members = [{ participant_id: 'owner', role: 'owner' },
+    { participant_id: 'remote', role: mode === 'voice-only' ? 'organizer' : 'booker' },
+    { participant_id: 'ai', role: 'assistant', subject: 'assistant' }];
+  const events = [{ seq: 1, event_type: 'session.invited', payload: { sid: 'sess_call', participant_id: 'remote' } }];
+  const add = (event_type, payload) => events.push({ seq: events.length + 1, event_type, payload: { sid: 'sess_call', ...payload } });
+  if (tool) {
+    add('session.assistant_actions', { source: 'vapi', participant_id: 'ai', actions: ['finish_call'] });
+    add('session.assistant_action', { source: 'vapi', participant_id: 'ai', action: 'finish_call', reason: 'unavailable' });
+  }
+  add('session.speech', { speaker: 'ai', state: 'started' });
+  add('session.speech', { speaker: 'remote', state: 'started' });
+  const client = { identity: 'assistant', snapshot: async (_cid, cursor) => ({ state: 'open', participants: members,
+    capabilities: { operations: ['session.end', 'session.invite'], assistant_voice: true }, events: events.filter(e => e.seq > cursor) }),
+    command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
+    request: async frame => { sent.push(frame); return { type: 'ack' }; } };
+  const options = { client, cid: 'conv_finish', mode, now: () => now,
+    storage: { load: async () => structuredClone(saved), save: async state => { saved = structuredClone(state); } },
+    planner: { decide: async () => { plans++; return { actions: [] }; } } };
+  return { options, events, sent, add, setNow: value => { now = value; }, saved: () => saved, plans: () => plans, client };
+}
+
+test('unavailable answering assistant ends after the closing audio despite continuous remote speech', async () => {
+  const f = finishFixture(), worker = new ConferenceWorker(f.options);
+  await worker.step(); assert.equal(f.sent.length, 0, 'closing audio has not finished');
+  f.add('session.speech', { speaker: 'ai', state: 'stopped' }); await worker.step();
+  f.setNow(11499); await worker.step(); assert.equal(f.sent.length, 0);
+  f.add('session.transcript', { speaker: 'remote', is_final: true, text: 'Would you like anything else?' });
+  f.setNow(11500); await worker.step();
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].type, 'session.end'); assert.equal(f.sent[0].sid, 'sess_call');
+  assert.equal(f.plans(), 0, 'closing needs no second model decision');
+  assert.throws(() => worker.prepare({ actions: [{ type: 'call_participant', to: 'remote', purpose: 'Try again' }] }), /wait for a new owner request/);
+  assert.throws(() => worker.prepare({ actions: [{ type: 'propose_arrangements', summary: 'Invented arrangement' }] }), /wait for a new owner request/);
+});
+
+test('closing deadline survives restart and ambiguous termination retries the identical command', async () => {
+  const f = finishFixture(); let attempts = 0;
+  f.client.request = async frame => { f.sent.push(frame); if (++attempts === 1) throw new UctpError('outcome may be unknown', { request: frame }); return { type: 'ack' }; };
+  let worker = new ConferenceWorker(f.options); await worker.step();
+  f.setNow(19999); worker = new ConferenceWorker(f.options); await worker.step(); assert.equal(f.sent.length, 0);
+  f.setNow(20000); await assert.rejects(worker.step(), /outcome may be unknown/);
+  const id = f.saved().pending.requests[0].id;
+  worker = new ConferenceWorker(f.options); await worker.step();
+  assert.equal(f.sent.length, 2); assert.ok(f.sent.every(frame => frame.id === id));
+  assert.equal(f.saved().pending, null);
+});
+
+test('closing the answering assistant cannot end a call after human takeover', async () => {
+  const f = finishFixture({ mode: 'voice-only' }), worker = new ConferenceWorker(f.options);
+  await worker.step(); f.add('browser.speaking', { participant_id: 'owner' });
+  f.setNow(30000); await worker.step(); assert.equal(f.sent.length, 0);
+  f.add('session.ended', {}); await worker.step(); assert.equal(f.sent.length, 0);
+  assert.equal(f.saved().lastBatch.results[0].state, 'skipped');
+});
+
+test('older voice agents stop reciprocal goodbye loops without requiring a quiet remote', async () => {
+  const f = finishFixture({ tool: false }), worker = new ConferenceWorker(f.options);
+  f.add('session.transcript', { speaker: 'ai', is_final: true, text: 'Goodbye.' });
+  await worker.step(); assert.equal(f.sent.length, 0, 'one goodbye is not reciprocal evidence');
+  f.add('session.transcript', { speaker: 'remote', is_final: true, text: 'Goodbye.' });
+  f.add('session.speech', { speaker: 'ai', state: 'stopped' }); await worker.step();
+  f.setNow(11500); await worker.step(); assert.equal(f.sent.length, 1);
+});
+
+test('unknown or unattributed finish tools cannot terminate the Session', async () => {
+  for (const invalid of [{ participant_id: 'remote' }, { reason: 'arbitrary' }, { source: 'chat' }]) {
+    const f = finishFixture(); Object.assign(f.events[2].payload, invalid);
+    const worker = new ConferenceWorker(f.options); await worker.step();
+    f.setNow(30000); await worker.step(); assert.equal(f.sent.length, 0);
+  }
+});
+
+
+test('an acknowledged finish waits for ended evidence without issuing a new command after more speech', async () => {
+  const f = finishFixture(); let worker = new ConferenceWorker(f.options); await worker.step();
+  f.setNow(20000); await worker.step(); assert.equal(f.sent.length, 1);
+  f.add('session.transcript', { speaker: 'remote', is_final: true, text: 'Goodbye again.' });
+  worker = new ConferenceWorker(f.options); await worker.step(); await worker.step();
+  assert.equal(f.sent.length, 1, 'restart and delayed teardown must not issue fresh termination IDs');
+  assert.equal(f.plans(), 0);
+  f.add('session.ended', {}); await worker.step(); assert.equal(f.plans(), 1, 'report the incomplete task after ended evidence');
+});

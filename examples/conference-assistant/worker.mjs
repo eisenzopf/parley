@@ -49,6 +49,14 @@ export class ConferenceWorker {
     for (const event of newEvents) {
       if (event.seq <= this.state.cursor) continue;
       this.state.events.push(event); this.state.cursor = event.seq;
+      if (event.event_type === 'session.assistant_action' && event.payload.action === 'finish_call') {
+        this.state.finishObservedAt ??= {};
+        this.state.finishObservedAt[event.seq] = this.now();
+      }
+      if (event.event_type === 'session.speech' && event.payload.speaker === this.self.participant_id) {
+        this.state.assistantSpeechObservedAt ??= {};
+        this.state.assistantSpeechObservedAt[event.payload.sid] = this.now();
+      }
       if (['session.ended', 'session.failed', 'session.interrupted', 'connection.failed', 'session.assistant_failed'].includes(event.event_type)
         || (event.event_type === 'session.transcript' && event.payload.speaker !== this.self.participant_id)) this.state.needsDecision = true;
       if (event.event_type === 'session.speech' || (event.event_type === 'session.transcript' && event.payload.speaker !== this.self.participant_id)) {
@@ -80,6 +88,37 @@ export class ConferenceWorker {
     }
     return [...speaking.values()].some(turn => active.has(turn.sid) && turn.active && !(turn.speaker === this.self.participant_id && retiredAi.has(turn.sid))) || (active.size && this.state.voiceActivityObservedAt != null
       && this.now() - this.state.voiceActivityObservedAt < 1500);
+  }
+
+  finishIntent(sid) {
+    const call = this.state.events.find(e => e.event_type === 'session.invited' && e.payload.sid === sid);
+    if (!call) return null;
+    const facts = this.state.events.filter(e => e.payload.sid === sid && e.seq > call.seq);
+    if (facts.some(e => ['session.ended', 'session.failed', 'session.interrupted', 'browser.speaking', 'phone.speaking'].includes(e.event_type))) return null;
+    const advertised = facts.some(e => e.event_type === 'session.assistant_actions' && e.payload.source === 'vapi'
+      && e.payload.participant_id === this.self.participant_id && e.payload.actions?.includes('finish_call'));
+    const intent = advertised && facts.find(e => e.event_type === 'session.assistant_action' && e.payload.source === 'vapi'
+      && e.payload.participant_id === this.self.participant_id && e.payload.action === 'finish_call'
+      && ['completed', 'unavailable', 'participant_goodbye'].includes(e.payload.reason));
+    if (intent) return intent;
+    // Older voice agents have no finish tool. A reciprocal, standalone goodbye
+    // is sufficient closing evidence; never infer failure from arbitrary prose.
+    const goodbye = speaker => facts.find(e => e.event_type === 'session.transcript' && e.payload.is_final === true
+      && e.payload.speaker === speaker && /^goodbye[.!\s]*$/i.test(e.payload.text?.trim() || ''));
+    const ai = goodbye(this.self.participant_id), remote = goodbye(call.payload.participant_id);
+    return ai && remote ? { seq: Math.max(ai.seq, remote.seq), payload: { sid, reason: 'participant_goodbye' } } : null;
+  }
+
+  finishReady(intent) {
+    this.state.finishObservedAt ??= {};
+    this.state.finishObservedAt[intent.seq] ??= this.now();
+    const elapsed = this.now() - this.state.finishObservedAt[intent.seq];
+    const speech = this.state.events.findLast(e => e.event_type === 'session.speech'
+      && e.payload.sid === intent.payload.sid && e.payload.speaker === this.self.participant_id);
+    // Remote speech must not restart the closing clock. Give the tool's goodbye
+    // time to play, with a deadline if the provider loses its stopped event.
+    return elapsed >= 10000 || (elapsed >= 1500 && speech?.payload.state === 'stopped'
+      && this.now() - (this.state.assistantSpeechObservedAt?.[intent.payload.sid] ?? this.now()) >= 250);
   }
 
   requireVoiceRehearsalEvidence() {
@@ -135,13 +174,34 @@ export class ConferenceWorker {
       if (['session.ended', 'session.failed'].includes(event.event_type)) humanCalls.delete(event.payload.sid);
     }
     if (humanCalls.size) return;
+    // Closing intent outranks conversational turn-taking: another answering AI
+    // cannot hold the line open by continually responding to the goodbye.
+    if (this.state.pending?.finishIntent) {
+      await this.executePending();
+      return;
+    }
+    if (!this.state.pending) {
+      const call = this.state.events.findLast(e => e.event_type === 'session.invited' && this.finishIntent(e.payload.sid));
+      const intent = call && this.finishIntent(call.payload.sid);
+      if (intent) {
+        // An acknowledged end waits for the journal's ended event. New speech
+        // must not create a fresh termination command while teardown finishes.
+        if (this.state.finishedCalls?.[call.payload.sid]) return;
+        const decision = { actions: [{ type: 'end_voice', sid: call.payload.sid }], source: 'voice-finish', source_seq: intent.seq };
+        this.state.lastDecision = { cursor: this.state.cursor, decision };
+        this.state.pending = this.prepare(decision);
+        this.state.pending.finishIntent = intent;
+        this.state.needsDecision = false;
+        this.finishReady(intent);
+        await this.storage.save(this.state);
+        await this.executePending();
+        return;
+      }
+    }
     // Wait for both people to finish speaking, including the AI readback.
     if (this.voiceBusy()) return;
     if (this.state.pending) {
       await this.executePending();
-      // Read the accepted effects from a new authoritative snapshot before
-      // planning again. Speech observed while waiting must not cause a second
-      // invitation from the pre-submission journal.
       return;
     }
     // The live voice model requests its own handoff through a typed event.
@@ -229,6 +289,15 @@ export class ConferenceWorker {
       batch.requests.push(this.client.command('message.send', this.cid, { msg_id: `msg_${suffix}`, to, body, delivery, content_type }, { id: `env_${suffix}` }));
     };
     for (const action of decision.actions) {
+      if (['call_participant', 'propose_arrangements', 'final_updates', 'complete_voice_rehearsal'].includes(action.type)) {
+        const unavailable = (this.state.events || []).findLast(e => e.event_type === 'session.assistant_action'
+          && e.payload.action === 'finish_call' && e.payload.reason === 'unavailable'
+          && e.payload.source === 'vapi' && e.payload.participant_id === this.self.participant_id);
+        const ownerRequest = (this.state.events || []).findLast(e => ['message.accepted', 'message.received'].includes(e.event_type)
+          && e.payload.from === owner.participant_id && e.payload.content_type !== 'application/json');
+        if (unavailable && !(ownerRequest?.seq > unavailable.seq))
+          throw new Error('The answering party could not help; report missing facts and wait for a new owner request before continuing');
+      }
       if (action.type === 'message') {
         message(action.to, action.body, action.delivery);
       } else if (action.type === 'propose_arrangements') {
@@ -291,7 +360,7 @@ export class ConferenceWorker {
       } else if (action.type === 'end_voice') {
         if (!this.capabilities?.operations?.includes('session.end') || !this.state.events.some(e => e.event_type === 'session.invited' && e.payload.sid === action.sid)) throw new Error('Unknown voice Session');
         if (this.mode === 'voice-only' && this.state.events.some(e => e.event_type === 'session.invited' && e.payload.sid === action.sid
-          && this.members.find(m => m.participant_id === e.payload.participant_id)?.role === 'organizer'))
+          && this.members.find(m => m.participant_id === e.payload.participant_id)?.role === 'organizer') && !this.finishIntent(action.sid))
           throw new Error('The owner ends the organizer call after browser and phone handoff; leave it open');
         batch.requests.push(this.client.command('session.end', this.cid, {}, { sid: action.sid, id: `env_${seed}_${batch.requests.length}` }));
       } else throw new Error(`Unsupported assistant action: ${action.type}`);
@@ -319,7 +388,17 @@ export class ConferenceWorker {
         const latest = await this.client.snapshot(this.cid, this.state.cursor);
         this.observe(latest.events);
         await this.storage.save(this.state);
-        if (latest.state === 'closed' || latest.events.length === 500 || this.voiceBusy()) return;
+        if (latest.state === 'closed' || latest.events.length === 500) return;
+        if (batch.finishIntent && request.type === 'session.end') {
+          const intent = this.finishIntent(request.sid);
+          if (!intent) {
+            batch.results.push({ request_id: request.id, state: 'skipped', reason: 'call ended or handed to owner' });
+            batch.next++; this.state.needsDecision = true;
+            await this.storage.save(this.state);
+            continue;
+          }
+          if (!this.finishReady(intent)) { await this.storage.save(this.state); return; }
+        } else if (this.voiceBusy()) return;
         if (browserInvitation && Array.isArray(batch.attempted) && !batch.attempted.includes(request.id)) {
           const sid = JSON.parse(request.payload.body).sid;
           if (this.state.events.some(e => e.payload.sid === sid
@@ -340,6 +419,10 @@ export class ConferenceWorker {
         await this.storage.save(this.state);
       }
       const response = await this.client.request(request);
+      if (batch.finishIntent && request.type === 'session.end') {
+        this.state.finishedCalls ??= {};
+        this.state.finishedCalls[request.sid] = { request_id: request.id, source_seq: batch.finishIntent.seq };
+      }
       batch.results.push({ request_id: request.id, response }); batch.next++;
       await this.storage.save(this.state);
       this.log({ event: 'action.accepted', cid: this.cid, request_id: request.id });
