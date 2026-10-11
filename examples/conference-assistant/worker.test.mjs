@@ -686,3 +686,53 @@ test('organizer failure does not trigger the automatic booker retry policy', asy
     capabilities: {}, events: f.events.filter(e => e.seq > cursor) });
   await new ConferenceWorker(f.options).step(); assert.equal(f.sent.length, 0); assert.equal(f.plans(), 1);
 });
+
+function missingBrowserToolFixture({ confirmation = 'I can pick them up at the curb.', announcement = "I'll bring Jonathan into the call now." } = {}) {
+  let now = 10000, saved = { cursor: 0, events: [], pending: null }, plans = 0;
+  const sent = [], events = [
+    { seq: 1, event_type: 'session.invited', payload: { sid: 'organizer_call', participant_id: 'organizer', connid: 'organizer_connection' } },
+    { seq: 2, event_type: 'session.assistant_attached', payload: { sid: 'organizer_call' } },
+    { seq: 3, event_type: 'session.assistant_actions', payload: { sid: 'organizer_call', source: 'vapi', participant_id: 'ai', actions: ['request_browser_join'] } },
+    { seq: 4, event_type: 'session.transcript', payload: { sid: 'organizer_call', speaker: 'organizer', is_final: true, text: confirmation } },
+    { seq: 5, event_type: 'session.speech', payload: { sid: 'organizer_call', speaker: 'ai', state: 'started' } },
+    { seq: 6, event_type: 'session.transcript', payload: { sid: 'organizer_call', speaker: 'ai', is_final: true, text: announcement } },
+  ];
+  const members = [{ participant_id: 'owner', role: 'owner' }, { participant_id: 'organizer', role: 'organizer' }, { participant_id: 'ai', role: 'assistant', subject: 'assistant' }];
+  const options = { cid: 'conv_missing_tool', now: () => now, client: { identity: 'assistant',
+    snapshot: async (_cid, cursor) => ({ state: 'open', participants: members, capabilities: { browser_handoff: true }, events: events.filter(e => e.seq > cursor) }),
+    command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
+    request: async frame => { sent.push(frame); events.push({ seq: events.length + 1, event_type: 'message.accepted', payload: { ...frame.payload, from: 'ai' } }); return { type: 'ack' }; } },
+    storage: { load: async () => structuredClone(saved), save: async state => { saved = structuredClone(state); } },
+    planner: { decide: async context => { plans++; assert.equal(context.browser_handoff_pending.sid, 'organizer_call');
+      return { actions: confirmation === 'I can pick them up at the curb.' ? [{ type: 'request_browser_join', sid: 'organizer_call' }] : [] }; } } };
+  return { options, events, sent, plans: () => plans, setNow: value => { now = value; },
+    stopSpeech: () => events.push({ seq: events.length + 1, event_type: 'session.speech', payload: { sid: 'organizer_call', speaker: 'ai', state: 'stopped' } }) };
+}
+
+test('spoken handoff without a tool wakes the planner after acknowledgement and rings the existing Session once', async () => {
+  const f = missingBrowserToolFixture(); let worker = new ConferenceWorker(f.options);
+  await worker.step(); assert.equal(f.plans(), 0, 'wait for closing acknowledgement audio');
+  f.stopSpeech(); await worker.step(); f.setNow(11500); await worker.step();
+  assert.equal(f.plans(), 1); assert.equal(f.sent.length, 1); assert.equal(f.sent[0].type, 'message.send');
+  assert.deepEqual(f.sent[0].payload.to, ['owner']); assert.equal(f.sent[0].payload.delivery, 'chat');
+  assert.deepEqual(JSON.parse(f.sent[0].payload.body), { type: 'travel.browser_invitation', version: 1, sid: 'organizer_call', retained_connid: 'organizer_connection' });
+  worker = new ConferenceWorker(f.options); await worker.step(); await worker.step();
+  assert.equal(f.sent.length, 1, 'replayed announcement cannot ring twice');
+});
+
+test('a spoken announcement cannot replace pickup confirmation or ring from a greeting', async () => {
+  for (const data of [{ confirmation: 'Hello, who is calling?' }, { announcement: "Hello, I'm David." }, { announcement: 'I will not bring Jonathan into the call.' }]) {
+    const f = missingBrowserToolFixture(data), worker = new ConferenceWorker(f.options);
+    await worker.step(); f.stopSpeech(); await worker.step(); f.setNow(11500); await worker.step();
+    assert.equal(f.sent.length, 0);
+    assert.equal(f.plans(), data.confirmation ? 1 : 0);
+  }
+});
+
+test('a late final announcement fragment wakes recovery even after an earlier wait decision', async () => {
+  const f = missingBrowserToolFixture({ announcement: "I'll bring" }), worker = new ConferenceWorker(f.options);
+  await worker.step(); f.stopSpeech(); await worker.step(); f.setNow(11500); await worker.step(); assert.equal(f.plans(), 0);
+  worker.state.needsDecision = false;
+  f.events.push({ seq: f.events.length + 1, event_type: 'session.transcript', payload: { sid: 'organizer_call', speaker: 'ai', is_final: true, text: 'Jonathan into the call now.' } });
+  await worker.step(); assert.equal(f.plans(), 1); assert.equal(f.sent.length, 1);
+});

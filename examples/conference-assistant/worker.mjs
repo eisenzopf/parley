@@ -49,6 +49,8 @@ export class ConferenceWorker {
     for (const event of newEvents) {
       if (event.seq <= this.state.cursor) continue;
       this.state.events.push(event); this.state.cursor = event.seq;
+      if (event.event_type === 'session.transcript' && event.payload.speaker === this.self.participant_id
+        && event.payload.is_final === true && this.browserJoinAnnouncement(event.payload.sid)) this.state.needsDecision = true;
       if (event.event_type === 'session.assistant_action' && event.payload.action === 'finish_call') {
         this.state.finishObservedAt ??= {};
         this.state.finishObservedAt[event.seq] = this.now();
@@ -88,6 +90,16 @@ export class ConferenceWorker {
     }
     return [...speaking.values()].some(turn => active.has(turn.sid) && turn.active && !(turn.speaker === this.self.participant_id && retiredAi.has(turn.sid))) || (active.size && this.state.voiceActivityObservedAt != null
       && this.now() - this.state.voiceActivityObservedAt < 1500);
+  }
+
+  browserJoinAnnouncement(sid) {
+    const facts = this.state.events.filter(e => e.payload.sid === sid && e.event_type === 'session.transcript'
+      && e.payload.speaker === this.self.participant_id && e.payload.is_final === true);
+    const spoken = facts.map(e => e.payload.text).join(' ');
+    // This only wakes the planner. It does not establish pickup or authorize a
+    // handoff; the planner must check the organizer's attributed confirmation.
+    return /\b(?:i['’]ll|i will|let me)\s+bring\s+jonathan\s+(?:in\b|into\s+(?:(?:this|the|same)\s+)*call\b)/i.test(spoken)
+      ? facts.at(-1) : null;
   }
 
   finishIntent(sid) {
@@ -261,6 +273,7 @@ export class ConferenceWorker {
       && e.payload.actions?.includes('request_browser_join'));
     const callUnavailable = callFacts.some(e => ['session.ended', 'session.failed', 'session.interrupted', 'session.assistant_failed'].includes(e.event_type)
       || (e.event_type === 'connection.failed' && e.payload.connid === organizerCall?.payload.connid));
+    let missingBrowserJoinTool = null;
     if (voiceRequestsHandoff && !callUnavailable) {
       const intent = callFacts.find(e => e.event_type === 'session.assistant_action'
         && e.payload.participant_id === this.self.participant_id && e.payload.source === 'vapi'
@@ -279,12 +292,19 @@ export class ConferenceWorker {
         this.state.needsDecision = false;
         await this.storage.save(this.state);
         await this.executePending();
+        return;
       }
-      return;
+      if (intent || invited) return;
+      const announcement = this.browserJoinAnnouncement(organizerCall.payload.sid);
+      if (!announcement || !callFacts.some(e => e.event_type === 'session.transcript'
+        && e.payload.speaker === organizer.participant_id && e.payload.is_final === true)) return;
+      missingBrowserJoinTool = { sid: organizerCall.payload.sid, announcement_seq: announcement.seq,
+        reason: 'David announced the browser handoff but did not invoke its tool. Verify pickup from the organizer transcript and invite this existing Session once.' };
     }
     if (!this.state.needsDecision) return;
     const context = {
       cid: this.cid, assistant: this.self.participant_id, demo_mode: this.mode,
+      ...(missingBrowserJoinTool ? { browser_handoff_pending: missingBrowserJoinTool } : {}),
       latest_owner_request: this.state.events.findLast(e => ['message.accepted', 'message.received'].includes(e.event_type)
         && e.payload.from === owner.participant_id && e.payload.content_type !== 'application/json'
         && e.payload.to?.includes(this.self.participant_id)) ?? null,
@@ -305,7 +325,12 @@ export class ConferenceWorker {
       const decision = await this.planner.decide({ ...context, ...(feedback ? { validation_feedback: feedback } : {}) });
       this.state.lastDecision = { cursor: this.state.cursor, decision };
       await this.storage.save(this.state);
-      try { batch = this.prepare(decision); break; }
+      try {
+        if (missingBrowserJoinTool && (decision.actions.length > 1 || decision.actions.some(a => a.type !== 'request_browser_join'
+          || a.sid !== missingBrowserJoinTool.sid)))
+          throw new Error('Missing handoff tool recovery must invite the existing organizer Session once, or wait with no actions if pickup is unconfirmed');
+        batch = this.prepare(decision); break;
+      }
       catch (error) {
         feedback = { attempt, reason: error.message, previous_decision: decision };
         this.state.decisionRejections.push({ attempt, reason: error.message, provider_chat_id: decision.provider_chat_id });

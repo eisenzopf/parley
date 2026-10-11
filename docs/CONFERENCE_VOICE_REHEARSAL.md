@@ -84,7 +84,10 @@ UCTP events as the assistant places calls and connections change.
    David invokes the explicit `request_browser_join` voice action. The host
    records that intent in the Conversation; the external worker sends the
    browser invitation through UCTP after speech finishes. The invitation should
-   appear once. David's spoken announcement alone does not establish the bridge;
+   appear once. If David announces bringing Jonathan in but omits the tool call,
+   the worker asks the planner to verify pickup from the organizer's transcript
+   and send that same invitation. A greeting cannot trigger this fallback.
+   David's spoken announcement alone does not establish the bridge;
    Jonathan must answer the browser invitation before the speaking peer changes.
 4. Wait for the browser to ring and display **Organizer call ready**. Jonathan
    selects **Answer organizer call** and answers the organizer's question into

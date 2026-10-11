@@ -191,6 +191,8 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
     let audio_url = format!("ws://{}/audio", audio_listener.local_addr().unwrap());
     let provider_received = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
     let provider_observed = provider_received.clone();
+    let missing_handoff_tool =
+        std::env::var("CONFERENCE_MISSING_HANDOFF_TOOL").as_deref() == Ok("1");
     let provider = tokio::spawn(async move {
         let mut calls = vec![];
         for (index, transcript) in transcripts.into_iter().enumerate() {
@@ -207,7 +209,9 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                             if position==16000 {
                                 if ws.send(Message::Text(json!({"type":"transcript","role":"user","transcriptType":"final","transcript":transcript}).to_string().into())).await.is_err(){break;}
                                 if index==1 {
-                                    if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-browser-join","function":{"name":"request_browser_join","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
+                                    if missing_handoff_tool {
+                                        if ws.send(Message::Text(json!({"type":"transcript","role":"assistant","transcriptType":"final","transcript":"Thank you for confirming pickup. I'll bring Jonathan into the call now."}).to_string().into())).await.is_err(){break;}
+                                    } else if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-browser-join","function":{"name":"request_browser_join","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
                                 } else {
                                     if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-finish-call","function":{"name":"finish_call","arguments":"{\"reason\":\"completed\"}"}}]}).to_string().into())).await.is_err(){break;}
                                     if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"started"}).to_string().into())).await.is_err(){break;}

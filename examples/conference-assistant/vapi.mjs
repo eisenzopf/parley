@@ -110,6 +110,11 @@ The owner joins that EXISTING Session using the browser UI. Do not place a new c
 or end the organizer Session for them. After the organizer's attributed reply confirms pickup and the AI finishes
 acknowledging it, use request_browser_join once for that Session. Then return an empty actions array while waiting
 for the browser action. A greeting or an unanswered invitation does not confirm pickup and must not trigger this action.
+If browser_handoff_pending is present, David has announced bringing Jonathan in but omitted the voice tool.
+Review the organizer's attributed pickup confirmation in this Session. If confirmed and the acknowledgement
+has finished, return request_browser_join for exactly browser_handoff_pending.sid now. The worker performs
+this browser invitation through UCTP; do not wait for another tool event or another owner request.
+If pickup is unconfirmed, return an empty actions array. Never substitute a new phone call or a new Session.
 Do not propose final arrangements until that requested confirmation call has ended.
 In voice-only mode, proposal and completion also require the organizer's attributed final transcript,
 successful owner browser and phone handoffs in that same Session, and its ended event.
