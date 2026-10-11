@@ -207,7 +207,7 @@ function renderStage(connected) {
   $('mission-approval').textContent = projection.approval ? 'Owner approved sandbox arrangements' : projection.proposal ? 'Waiting for owner approval' : 'Arrangements still being gathered';
   const updates = projection.finalUpdates();
   const count = states => updates.filter(u => states.includes(u.delivery?.state)).length;
-  const smsTotal = updates.filter(u => u.member.sms).length;
+  const smsTotal = [...projection.members.values()].filter(m => m.role !== 'assistant' && m.sms).length;
   const chats = updates.filter(u => u.chat && !u.member.sms).length;
   $('mission-updates').textContent = voiceOnly ? projection.voiceComplete ? 'Voice rehearsal complete · SMS deferred' : 'SMS deferred · voice rehearsal only' : `${count(['sent', 'delivered'])}/${smsTotal} final updates sent · ${count(['delivered'])}/${smsTotal} delivered${smsTotal < 4 ? ` · ${chats}/${4 - smsTotal} chat updates accepted` : ''}`;
   const uncertain = count(['unknown', 'failed']);

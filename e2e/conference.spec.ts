@@ -38,6 +38,7 @@ test(`conference task, owner approval, ${smsRecipients} SMS updates, and actual 
     await page.locator('#cid').fill(cid); await page.locator('#token').fill(ownerToken);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(page.locator('#status')).toContainText('SMS fixture');
+    await expect(page.locator('#mission-updates')).toHaveText(smsRecipients === 4 ? '0/4 final updates sent · 0/4 delivered' : '0/2 final updates sent · 0/2 delivered · 0/2 chat updates accepted');
     await expect(page.locator('#build-info')).toContainText('Rvoip 0.3.12 + conference patches');
     await expect(page.locator('#build-info')).toContainText('UCTP v1 / websocket');
     await page.getByRole('button', { name: 'Start coordinating' }).click();
