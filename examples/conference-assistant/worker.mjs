@@ -121,6 +121,42 @@ export class ConferenceWorker {
       && this.now() - (this.state.assistantSpeechObservedAt?.[intent.payload.sid] ?? this.now()) >= 250);
   }
 
+  bookerFailure() {
+    const owner = this.members.find(m => m.role === 'owner');
+    const booker = this.members.find(m => m.role === 'booker');
+    const request = this.state.events.findLast(e => ['message.accepted', 'message.received'].includes(e.event_type)
+      && e.payload.from === owner?.participant_id && e.payload.to?.includes(this.self.participant_id)
+      && e.payload.content_type !== 'application/json');
+    if (!request || !booker) return null;
+    const calls = this.state.events.filter(e => e.event_type === 'session.invited'
+      && e.payload.participant_id === booker.participant_id && e.seq > request.seq);
+    const call = calls.at(-1);
+    if (!call) return null;
+    const facts = this.state.events.filter(e => e.payload.sid === call.payload.sid);
+    const failure = facts.find(e => (e.event_type === 'session.assistant_action' && e.payload.action === 'finish_call'
+        && e.payload.reason === 'unavailable' && e.payload.source === 'vapi' && e.payload.participant_id === this.self.participant_id)
+      || ['session.failed', 'session.assistant_failed'].includes(e.event_type)
+      || (e.event_type === 'connection.failed' && e.payload.connid === call.payload.connid));
+    if (!failure || !facts.some(e => ['session.ended', 'session.failed'].includes(e.event_type))) return null;
+    return { sid: call.payload.sid, seq: failure.seq, task_seq: request.seq, call, booker,
+      retry: calls.length === 1, unavailable: failure.payload.reason === 'unavailable' };
+  }
+
+  prepareBookerRecovery(failure) {
+    const cause = failure.unavailable ? 'the answering party could not help or connect the intended person' : 'the voice connection failed';
+    const owner = this.members.find(m => m.role === 'owner');
+    const body = failure.retry
+      ? `The first call to ${failure.booker.name || 'the booker'} did not complete: ${cause}. I will call the booker once more now.`
+      : `The retry call to ${failure.booker.name || 'the booker'} did not complete: ${cause}. I have stopped retrying and need your direction. No replacement itinerary was confirmed.`;
+    const actions = [{ type: 'message', to: [owner.participant_id], delivery: 'chat', body }];
+    if (failure.retry) actions.push({ type: 'call_participant', to: failure.booker.participant_id, purpose: failure.call.payload.purpose });
+    const decision = { actions, source: 'booker-recovery', source_seq: failure.seq };
+    const batch = this.prepare(decision, { bookerRetry: failure.retry ? failure : null });
+    batch.bookerRecovery = { failed_sid: failure.sid, task_seq: failure.task_seq, retry: failure.retry };
+    this.state.lastDecision = { cursor: this.state.cursor, decision };
+    return batch;
+  }
+
   requireVoiceRehearsalEvidence() {
     if (this.mode !== 'voice-only') return;
     const organizer = this.members.find(m => m.role === 'organizer');
@@ -128,9 +164,10 @@ export class ConferenceWorker {
     const call = this.state.events.findLast(e => e.event_type === 'session.invited' && e.payload.participant_id === organizer?.participant_id);
     const facts = this.state.events.filter(e => e.payload.sid === call?.payload.sid);
     const browser = facts.find(e => e.event_type === 'browser.speaking' && e.payload.details?.retained_connid === call?.payload.connid);
-    const failedBooker = this.state.events.some(e => e.event_type === 'session.assistant_failed'
-      && this.state.events.some(invite => invite.event_type === 'session.invited' && invite.payload.sid === e.payload.sid
-        && this.members.find(m => m.participant_id === invite.payload.participant_id)?.role === 'booker'));
+    const latestBooker = this.state.events.findLast(e => e.event_type === 'session.invited'
+      && this.members.find(m => m.participant_id === e.payload.participant_id)?.role === 'booker');
+    const failedBooker = latestBooker && this.state.events.some(e => e.payload.sid === latestBooker.payload.sid
+      && ['session.failed', 'session.assistant_failed'].includes(e.event_type));
     if (!call || failedBooker || facts.some(e => ['session.failed', 'session.assistant_failed', 'session.interrupted'].includes(e.event_type)
         || (e.event_type === 'connection.failed' && e.payload.connid === call.payload.connid))
       || !facts.some(e => e.event_type === 'session.transcript' && e.payload.speaker === organizer.participant_id && e.payload.is_final === true)
@@ -204,6 +241,15 @@ export class ConferenceWorker {
       await this.executePending();
       return;
     }
+    const bookerFailure = this.bookerFailure();
+    if (bookerFailure) {
+      if (this.state.bookerRecoveries?.[bookerFailure.sid]) return;
+      this.state.pending = this.prepareBookerRecovery(bookerFailure);
+      this.state.needsDecision = false;
+      await this.storage.save(this.state);
+      await this.executePending();
+      return;
+    }
     // The live voice model requests its own handoff through a typed event.
     // Do not ask a second model to infer the same intent while the caller waits.
     const organizer = this.members.find(m => m.role === 'organizer');
@@ -274,7 +320,7 @@ export class ConferenceWorker {
     await this.executePending();
   }
 
-  prepare(decision) {
+  prepare(decision, { bookerRetry = null } = {}) {
     if (!Array.isArray(decision.actions) || decision.actions.length > 8) throw new Error('Invalid action batch');
     const seed = digest(`${this.cid}:${this.state.cursor}:${JSON.stringify(decision.actions)}`);
     const batch = { id: seed, requests: [], next: 0, results: [], attempted: [], proposal: null, completedProposal: null };
@@ -288,6 +334,14 @@ export class ConferenceWorker {
       const suffix = `${seed}_${batch.requests.length}`;
       batch.requests.push(this.client.command('message.send', this.cid, { msg_id: `msg_${suffix}`, to, body, delivery, content_type }, { id: `env_${suffix}` }));
     };
+    if (bookerRetry) {
+      const failure = this.bookerFailure();
+      if (!failure?.retry || failure.sid !== bookerRetry.sid || decision.actions.length !== 2
+        || decision.actions[0].type !== 'message' || decision.actions[0].delivery !== 'chat'
+        || decision.actions[0].to?.length !== 1 || decision.actions[0].to[0] !== owner.participant_id
+        || decision.actions[1].type !== 'call_participant' || decision.actions[1].to !== failure.booker.participant_id)
+        throw new Error('Automatic retry requires the first ended booker failure and an owner chat report before calling');
+    }
     for (const action of decision.actions) {
       if (['call_participant', 'propose_arrangements', 'final_updates', 'complete_voice_rehearsal'].includes(action.type)) {
         const unavailable = (this.state.events || []).findLast(e => e.event_type === 'session.assistant_action'
@@ -295,7 +349,13 @@ export class ConferenceWorker {
           && e.payload.source === 'vapi' && e.payload.participant_id === this.self.participant_id);
         const ownerRequest = (this.state.events || []).findLast(e => ['message.accepted', 'message.received'].includes(e.event_type)
           && e.payload.from === owner.participant_id && e.payload.content_type !== 'application/json');
-        if (unavailable && !(ownerRequest?.seq > unavailable.seq))
+        const laterBookerCall = unavailable && this.state.events.find(e => e.event_type === 'session.invited'
+          && e.seq > unavailable.seq && this.members.find(m => m.participant_id === e.payload.participant_id)?.role === 'booker'
+          && this.state.events.some(end => end.payload.sid === e.payload.sid && end.event_type === 'session.ended')
+          && !this.state.events.some(bad => bad.payload.sid === e.payload.sid && (['session.failed', 'session.assistant_failed'].includes(bad.event_type)
+            || (bad.event_type === 'session.assistant_action' && bad.payload.reason === 'unavailable'))));
+        if (unavailable && !(ownerRequest?.seq > unavailable.seq) && !laterBookerCall
+          && !(bookerRetry && action.type === 'call_participant' && action.to === bookerRetry.booker.participant_id))
           throw new Error('The answering party could not help; report missing facts and wait for a new owner request before continuing');
       }
       if (action.type === 'message') {
@@ -354,7 +414,7 @@ export class ConferenceWorker {
         if (!known.has(action.to) || action.to === this.self.participant_id) throw new Error('call_participant.to must exactly match a human participants[].participant_id');
         if (!this.capabilities?.assistant_voice || !this.capabilities?.operations?.includes('session.invite')) throw new Error('Assistant voice invitation is unavailable');
         if (!text(action.purpose, 4000)) throw new Error('Voice invitation needs a non-empty purpose string');
-        if (this.mode === 'voice-only' && this.state.events.some(e => e.event_type === 'session.invited' && e.payload.participant_id === action.to))
+        if (this.mode === 'voice-only' && !bookerRetry && this.state.events.some(e => e.event_type === 'session.invited' && e.payload.participant_id === action.to))
           throw new Error('This participant was already called in this voice rehearsal; do not redial automatically');
         batch.requests.push(this.client.command('session.invite', this.cid, { medium: 'voice', to: action.to, purpose: action.purpose }, { id: `env_${seed}_${batch.requests.length}` }));
       } else if (action.type === 'end_voice') {
@@ -430,6 +490,10 @@ export class ConferenceWorker {
     if (batch.proposal) { this.state.proposal = batch.proposal; this.state.approved = null; }
     if (batch.completedProposal) this.state.completedProposal = batch.completedProposal;
     if (batch.completedVoiceProposal) this.state.completedVoiceProposal = batch.completedVoiceProposal;
+    if (batch.bookerRecovery) {
+      this.state.bookerRecoveries ??= {};
+      this.state.bookerRecoveries[batch.bookerRecovery.failed_sid] = batch.bookerRecovery;
+    }
     this.state.lastBatch = batch;
     this.state.pending = null;
     await this.storage.save(this.state);

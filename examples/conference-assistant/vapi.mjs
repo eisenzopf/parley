@@ -66,7 +66,9 @@ Use call_participant targeting the current organizer Participant with those exac
 requested browser/phone handoff. The server resolves the current route, which may have changed.
 Do not call the booker again for unchanged confirmed facts, propose arrangements from the failed call,
 or ask the owner again whether to retry when their newer message already requests coordination.
-Never retry automatically from a failure alone: a later attributed owner request must authorize it.
+The worker reports the first failed booker call to the owner in chat and retries the booker once automatically.
+Do not independently redial: the worker owns this bounded recovery. A second failure is reported and waits
+for new owner direction. Organizer retries still require a later attributed owner request.
 Return at most one action per decision. final_updates is one action that contains four updates.
 Final transcript events may be fragments of one spoken answer. Wait until the booker has provided the flight,
 two travelers/seats, departure time, arrival time and terminal; do not end the call after an incomplete fragment.
@@ -74,7 +76,8 @@ If the answering party is an AI assistant, receptionist or voicemail that cannot
 ask once whether they can connect the intended person. If unavailable, finish the call promptly and report
 that the intended person was not reached and which facts are missing. Do not repeat the request or exchange
 goodbyes indefinitely. session.assistant_action with action finish_call is authoritative closing intent;
-reason unavailable means the task is incomplete. Wait for owner direction; never retry or advance from it alone.
+reason unavailable means the task is incomplete. For the first booker failure, the worker reports it and retries once.
+For a repeated booker failure or an organizer failure, wait for owner direction; do not advance from it.
 session.speech reports attributed started/stopped activity. Do not end a call while either the human or the AI is speaking.
 Let the AI finish its complete spoken readback/confirmation of the itinerary before ending the booker call.
 When the booker says goodbye or clearly asks to finish, have David give one brief goodbye, wait for
@@ -94,8 +97,10 @@ Never fill missing inventory facts with the owner's desired times. If the booker
 the flight number, two travelers and actual departure/arrival times but supplied only an arrival gate,
 carry that exact gate into the organizer call and ask the organizer to confirm the appropriate pickup
 terminal or meeting point. Do not invent a terminal or strand coordination waiting for the ended booker call.
-If session.assistant_failed reports a voice transport failure during the booker call, report that failure
-to the owner in chat and wait for their direction. Session.ended alone does not cancel that failure evidence.
+If session.assistant_failed reports a voice transport failure during the booker call, the worker reports
+and retries the first booker failure once. A failed retry waits for owner direction. Session.ended alone
+does not cancel failure evidence, but a later successful booker retry with complete attributed facts replaces
+the failed attempt. Continue from that newer offered itinerary; never wait again on the superseded failure.
 Include in the organizer call's purpose that Jonathan will join this same call. After confirming the flight
 and pickup, the voice agent should say, "Let me bring Jonathan into this same call so he can confirm."
 The organizer may have a question only Jonathan can answer, such as whether to go to the hotel or the venue

@@ -605,3 +605,84 @@ test('an acknowledged finish waits for ended evidence without issuing a new comm
   assert.equal(f.plans(), 0);
   f.add('session.ended', {}); await worker.step(); assert.equal(f.plans(), 1, 'report the incomplete task after ended evidence');
 });
+
+function bookerRetryFixture(mode = 'full', reason = 'unavailable') {
+  let saved = { cursor: 0, events: [], pending: null }, plans = 0;
+  const sent = [], members = [{ participant_id: 'owner', role: 'owner' },
+    { participant_id: 'booker', name: 'Travel booker', role: 'booker', sip: 'sip:fixture@example.invalid' },
+    { participant_id: 'ai', role: 'assistant', subject: 'assistant' }];
+  const events = [{ seq: 1, event_type: 'message.accepted', payload: { from: 'owner', to: ['ai'], content_type: 'text/plain', body: 'Coordinate the trip' } }];
+  const add = (event_type, payload) => events.push({ seq: events.length + 1, event_type, payload });
+  add('session.invited', { sid: 'first', participant_id: 'booker', connid: 'first_connection', purpose: 'Check two seats and offered itinerary for Jonathan and Alex' });
+  if (reason === 'unavailable') add('session.assistant_action', { sid: 'first', participant_id: 'ai', source: 'vapi', action: 'finish_call', reason });
+  else add('session.assistant_failed', { sid: 'first' });
+  add('session.ended', { sid: 'first' });
+  const client = { identity: 'assistant', snapshot: async (_cid, cursor) => ({ state: 'open', participants: members,
+    capabilities: { assistant_voice: true, operations: ['session.invite', 'session.end'] }, events: events.filter(e => e.seq > cursor) }),
+    command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
+    request: async frame => {
+      sent.push(frame);
+      if (frame.type === 'message.send') add('message.accepted', { ...frame.payload, from: 'ai' });
+      if (frame.type === 'session.invite') add('session.invited', { ...frame.payload, sid: 'retry', participant_id: 'booker', connid: 'retry_connection' });
+      return { type: 'ack' };
+    } };
+  const options = { client, cid: 'conv_booker_retry', mode,
+    storage: { load: async () => structuredClone(saved), save: async state => { saved = structuredClone(state); } },
+    planner: { decide: async () => { plans++; return { actions: [] }; } } };
+  return { options, sent, events, add, client, saved: () => saved, plans: () => plans };
+}
+
+test('first unavailable booker call is reported in owner chat before one retry; a second failure reports and stops', async () => {
+  for (const mode of ['full', 'voice-only']) {
+    const f = bookerRetryFixture(mode), worker = new ConferenceWorker(f.options); await worker.step();
+    assert.deepEqual(f.sent.map(x => x.type), ['message.send', 'session.invite']);
+    assert.deepEqual(f.sent[0].payload.to, ['owner']); assert.equal(f.sent[0].payload.delivery, 'chat');
+    assert.match(f.sent[0].payload.body, /first call.*once more/);
+    assert.equal(f.sent[1].payload.to, 'booker'); assert.equal(f.sent[1].payload.purpose, f.events[1].payload.purpose);
+    f.add('session.assistant_action', { sid: 'retry', participant_id: 'ai', source: 'vapi', action: 'finish_call', reason: 'unavailable' });
+    f.add('session.ended', { sid: 'retry' }); await worker.step(); await worker.step();
+    assert.deepEqual(f.sent.map(x => x.type), ['message.send', 'session.invite', 'message.send']);
+    assert.match(f.sent[2].payload.body, /stopped retrying.*direction/);
+    assert.equal(f.plans(), 0);
+    assert.throws(() => worker.prepare({ actions: [{ type: 'call_participant', to: 'booker', purpose: 'An unauthorized third attempt' }] }), /wait for a new owner request/);
+  }
+});
+
+test('failed voice attachment waits for ended evidence, then reports and retries the booker once', async () => {
+  const f = bookerRetryFixture('full', 'transport'); f.events.pop();
+  const worker = new ConferenceWorker(f.options); await worker.step(); assert.equal(f.sent.length, 0);
+  f.add('session.ended', { sid: 'first' }); await worker.step();
+  assert.deepEqual(f.sent.map(x => x.type), ['message.send', 'session.invite']);
+  assert.match(f.sent[0].payload.body, /voice connection failed/);
+});
+
+test('ambiguous retry preserves the accepted owner report and exactly the same call command across restart', async () => {
+  const f = bookerRetryFixture(); const accepted = f.client.request; let first = true;
+  f.client.request = async frame => {
+    if (frame.type === 'session.invite' && first) { first = false; f.sent.push(frame); throw new UctpError('outcome may be unknown', { request: frame }); }
+    return accepted(frame);
+  };
+  let worker = new ConferenceWorker(f.options); await assert.rejects(worker.step(), /outcome may be unknown/);
+  const id = f.saved().pending.requests[1].id;
+  worker = new ConferenceWorker(f.options); await worker.step(); await worker.step();
+  assert.equal(f.sent.filter(x => x.type === 'message.send').length, 1);
+  assert.equal(f.sent.filter(x => x.type === 'session.invite').length, 2);
+  assert.ok(f.sent.filter(x => x.type === 'session.invite').every(x => x.id === id));
+});
+
+test('successful booker retry resumes planning and can propose from newer facts despite the earlier unavailable attempt', async () => {
+  const f = bookerRetryFixture(), worker = new ConferenceWorker(f.options); await worker.step();
+  f.add('session.transcript', { sid: 'retry', speaker: 'booker', is_final: true, text: 'Two seats on RD742, eleven to four, terminal C.' });
+  f.add('session.ended', { sid: 'retry' }); await worker.step();
+  assert.equal(f.plans(), 1);
+  assert.doesNotThrow(() => worker.prepare({ actions: [{ type: 'propose_arrangements', summary: 'Newer confirmed sandbox itinerary and pickup' }] }));
+  assert.equal(f.sent.filter(x => x.type === 'session.invite').length, 1);
+});
+
+test('organizer failure does not trigger the automatic booker retry policy', async () => {
+  const f = bookerRetryFixture(); f.events[1].payload.participant_id = 'organizer';
+  f.options.client.snapshot = async (_cid, cursor) => ({ state: 'open', participants: [{ participant_id: 'owner', role: 'owner' },
+    { participant_id: 'booker', role: 'booker' }, { participant_id: 'organizer', role: 'organizer' }, { participant_id: 'ai', role: 'assistant', subject: 'assistant' }],
+    capabilities: {}, events: f.events.filter(e => e.seq > cursor) });
+  await new ConferenceWorker(f.options).step(); assert.equal(f.sent.length, 0); assert.equal(f.plans(), 1);
+});
