@@ -528,6 +528,143 @@ index 786763b..ee40279 100644
          media_adapter_inner.set_ice_policy(config.ice);
          // Apply RFC 4568 SDES-SRTP policy from Config (Step 2B.1).
          media_adapter_inner.set_srtp_policy(
+diff --git a/crates/sip/rvoip-sip/src/media_stream.rs b/crates/sip/rvoip-sip/src/media_stream.rs
+index 43e99c8..50bb78c 100644
+--- a/crates/sip/rvoip-sip/src/media_stream.rs
++++ b/crates/sip/rvoip-sip/src/media_stream.rs
+@@ -387,17 +387,25 @@ const FRAME_CHANNEL_CAP: usize = 64;
+ /// advance by emitted samples plus any forward gap in that input timeline.
+ /// This avoids copying a remote random epoch while preserving Annex-B DTX or
+ /// packet-loss intervals that must remain visible to the RTP packetizer.
++/// A new peer stream has its own timestamp epoch; rebasing that input must
++/// preserve the retained SIP sender's output clock.
+ #[derive(Default)]
+ struct OutboundRtpClock {
+     next_output_timestamp: u32,
+     expected_input_timestamp: Option<u32>,
++    source_stream_id: Option<String>,
+ }
+ 
+ fn advance_outbound_timestamp(
+     clock: &mut OutboundRtpClock,
++    source_stream_id: &str,
+     samples_emitted: usize,
+     upstream_rtp_ts: u32,
+ ) -> u32 {
++    if clock.source_stream_id.as_deref() != Some(source_stream_id) {
++        clock.source_stream_id = Some(source_stream_id.to_owned());
++        clock.expected_input_timestamp = None;
++    }
+     let forward_gap = clock
+         .expected_input_timestamp
+         .map(|expected| upstream_rtp_ts.wrapping_sub(expected))
+@@ -1442,6 +1450,7 @@ async fn run_outbound_pump(
+         let samples_emitted = audio_frame.samples.len() / usize::from(channels.max(1));
+         audio_frame.timestamp = advance_outbound_timestamp(
+             &mut outbound_clock,
++            media_frame.stream_id.as_str(),
+             samples_emitted,
+             media_frame.timestamp_rtp,
+         );
+@@ -2218,7 +2227,7 @@ mod outbound_timestamp_tests {
+         let upstream = [1_000_000u32, 1_000_160, 1_000_320, 1_000_480];
+         let out: Vec<u32> = upstream
+             .iter()
+-            .map(|&u| advance_outbound_timestamp(&mut clock, G711_FRAME_SAMPLES, u))
++            .map(|&u| advance_outbound_timestamp(&mut clock, "peer-a", G711_FRAME_SAMPLES, u))
+             .collect();
+         assert_eq!(out, vec![0, 160, 320, 480]);
+     }
+@@ -2226,23 +2235,84 @@ mod outbound_timestamp_tests {
+     #[test]
+     fn preserves_a_suppressed_dtx_interval() {
+         let mut clock = OutboundRtpClock::default();
+-        assert_eq!(advance_outbound_timestamp(&mut clock, 80, 4_000), 0);
+-        assert_eq!(advance_outbound_timestamp(&mut clock, 80, 4_080), 80);
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "peer-a", 80, 4_000),
++            0
++        );
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "peer-a", 80, 4_080),
++            80
++        );
+         // Two 10 ms frames were suppressed. Resumed audio retains the +160 gap.
+-        assert_eq!(advance_outbound_timestamp(&mut clock, 80, 4_320), 320);
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "peer-a", 80, 4_320),
++            320
++        );
+         assert_eq!(clock.next_output_timestamp, 400);
+     }
+ 
++    #[test]
++    fn replacing_the_peer_does_not_copy_its_random_rtp_epoch_into_the_retained_call() {
++        let mut clock = OutboundRtpClock::default();
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "assistant", 160, 10_000),
++            0
++        );
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "assistant", 160, 10_160),
++            160
++        );
++        // Chrome's independent RTP epoch is a new source, not a multi-day DTX gap.
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "browser", 160, 1_000_000_000),
++            320
++        );
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "browser", 160, 1_000_000_160),
++            480
++        );
++        // The callback phone can use a lower epoch. Its later DTX gaps are real.
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "phone", 160, 400),
++            640
++        );
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "phone", 160, 1_040),
++            1_280
++        );
++    }
++
++    #[test]
++    fn source_switch_at_wrap_preserves_the_local_sender_clock() {
++        let mut clock = OutboundRtpClock::default();
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "assistant", 160, 10_000),
++            0
++        );
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "browser", 160, u32::MAX - 100),
++            160
++        );
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "browser", 160, 59),
++            320
++        );
++    }
++
+     #[test]
+     fn local_clock_and_remote_input_wrap_at_u32_boundary() {
+         let mut clock = OutboundRtpClock {
+             next_output_timestamp: u32::MAX - 100,
+             expected_input_timestamp: None,
++            source_stream_id: None,
+         };
+-        let first = advance_outbound_timestamp(&mut clock, 160, u32::MAX - 100);
++        let first = advance_outbound_timestamp(&mut clock, "peer-a", 160, u32::MAX - 100);
+         assert_eq!(first, u32::MAX - 100);
+         assert_eq!(clock.next_output_timestamp, 59);
+-        assert_eq!(advance_outbound_timestamp(&mut clock, 160, 59), 59);
++        assert_eq!(
++            advance_outbound_timestamp(&mut clock, "peer-a", 160, 59),
++            59
++        );
+         assert_eq!(clock.next_output_timestamp, 219);
+     }
+ }
 diff --git a/crates/uctp/rvoip-uctp/src/application.rs b/crates/uctp/rvoip-uctp/src/application.rs
 new file mode 100644
 index 0000000..6839d6b

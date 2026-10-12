@@ -6,7 +6,9 @@ export class BrowserAudio {
   async join(sid) {
     if (this.peer) throw new Error('Browser audio already active');
     this.sid = sid;
-    this.media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    this.media = await navigator.mediaDevices.getUserMedia({ audio: {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 },
+    }, video: false });
     try {
       const offer = await this.client.request(this.client.command('session.update', this.cid, { kind: 'join_browser' }, { sid }));
       if (offer.type !== 'connection.offer' || offer.sid !== sid) throw new Error('Expected offer for the existing voice Session');
