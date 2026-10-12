@@ -17,7 +17,7 @@ const audioSettings = new AudioSettings({ root: $('audio-settings'), remoteAudio
   },
 });
 let joining = false, browserAccess = false, creatingConversation = false, workerReady = true, lastSnapshot = null, connectingConversation = false;
-let loadingConversation = false, browserConnected = false;
+let loadingConversation = false, browserConnected = false, savingPhones = false, phonesDirty = false, dismissedCall = null;
 const defaultTask = $('task').value;
 
 const error = value => { $('notice').textContent = value?.message || String(value); };
@@ -158,7 +158,25 @@ function consume(snapshot) {
   $('join').textContent = joining ? 'Joining organizer call…' : invitation ? 'Answer organizer call' : 'Waiting for organizer call';
   $('browser-invitation').classList.toggle('hidden', !invitation || joining);
   $('browser-invitation').textContent = invitation ? 'Organizer call ready—answer here to join Jonathan from this browser.' : '';
-  ringtone.start(joining ? null : invitation?.sid);
+  ringtone.start(joining || dismissedCall === invitation?.sid ? null : invitation?.sid);
+  const inBrowser = current?.browser === 'speaking';
+  const onPhone = current?.phone === 'speaking';
+  const showCall = !!invitation || joining || inBrowser || onPhone;
+  $('stop-session').classList.toggle('hidden', !activeSession || showCall);
+  $('stop-session').disabled = !!interruptedSession;
+  $('call-panel').classList.toggle('hidden', !showCall || snapshot.state === 'closed');
+  $('call-panel').classList.toggle('incoming', !!invitation && !joining && dismissedCall !== invitation.sid);
+  $('call-state').textContent = joining ? 'CONNECTING' : onPhone ? 'ON YOUR PHONE' : inBrowser ? 'CONNECTED · BROWSER AUDIO' : 'INCOMING CALL';
+  $('call-title').textContent = name(current?.participant) || 'Conference organizer';
+  $('join').classList.toggle('hidden', !invitation && !joining);
+  $('dismiss-call').classList.toggle('hidden', !invitation || joining || dismissedCall === invitation.sid);
+  $('mute-call').classList.toggle('hidden', !inBrowser);
+  $('mute-call').disabled = !audio?.media;
+  $('mute-call').textContent = audio?.muted ? 'Unmute microphone' : 'Mute microphone';
+  $('mute-call').setAttribute('aria-pressed', String(!!audio?.muted));
+  $('end').classList.toggle('hidden', !inBrowser && !onPhone);
+  $('move-phone').classList.toggle('hidden', !inBrowser);
+
   const phonePending = ['prepared', 'dialing', 'answered', 'confirmed', 'committing'].includes(current?.phone);
   $('move-phone').disabled = snapshot.state === 'closed' || !capabilities.phone_handoff || !me.sip || current?.browser !== 'speaking' || phonePending || current?.phone === 'unknown';
   $('cancel-phone').classList.toggle('hidden', !phonePending);
@@ -333,20 +351,20 @@ async function accessRequest(path, options = {}) {
 }
 function updateNewConversationButton() {
   const live = projection && [...projection.sessions.values()].some(s => !['ended', 'failed'].includes(s.state));
-  const busy = creatingConversation || connectingConversation || loadingConversation;
-  $('new-conversation').disabled = !browserAccess || busy || !!live;
+  const busy = creatingConversation || connectingConversation || loadingConversation || savingPhones;
+  $('new-conversation').disabled = !browserAccess || busy || !!live || phonesDirty;
   $('conversation-list').disabled = busy || !!live;
   $('sign-out').disabled = busy || !!live;
   $('connect-browser').disabled = !browserAccess || busy || browserConnected || !!live;
   $('connect-browser').textContent = connectingConversation || loadingConversation ? 'Connecting browser…' : browserConnected ? 'Browser connected' : 'Connect browser';
-  $('new-conversation').title = live ? 'End the current voice call before starting a new conversation.' : '';
-  $('conversation-action-status').textContent = live ? interruptedSession
+  $('new-conversation').title = phonesDirty ? 'Save phone numbers in Setup & settings first.' : live ? 'End the current voice call before starting a new conversation.' : '';
+  $('conversation-action-status').textContent = phonesDirty ? 'Save your phone-number changes in Setup & settings before starting a new conversation.' : live ? interruptedSession
     ? 'Verify the interrupted call has ended below, then you can start a new conversation.'
     : 'End the current voice call to start a new conversation.' : '';
 }
 function lockBrowser(message = 'Enter your password to open your conversations.') {
   browserAccess = false; browserConnected = false; client?.close(); client = null; audio?.closeLocal(); audio = null;
-  ringtone.stop(); projection = null; lastSnapshot = null;
+  ringtone.stop(); projection = null; lastSnapshot = null; $('call-panel').classList.add('hidden'); $('settings-panel').close();
   audioSettings.close();
   document.body.classList.remove('presenting'); document.body.classList.add('access-locked');
   $('browser-access').classList.remove('hidden'); $('password-form').classList.remove('hidden');
@@ -401,7 +419,33 @@ async function showManagedConversation(session, resetTask = false) {
   if (resetTask) { $('task').value = defaultTask; $('task-composer').open = true; $('send').textContent = 'Start coordinating'; }
   updateNewConversationButton();
 }
+async function loadPhones() {
+  try {
+    const { phones } = await accessRequest('phones');
+    if (!phonesDirty) for (const role of ['owner', 'booker', 'organizer']) $(`phone-${role}`).value = phones[role] || '';
+    $('phone-settings-status').textContent = 'Save changes, then choose New conversation. Existing conversations keep their numbers.';
+  } catch (e) { $('phone-settings-status').textContent = e.message; }
+}
+function openSettings() { if (!$('settings-panel').open) $('settings-panel').showModal(); }
+$('open-settings').onclick = openSettings;
+$('close-settings').onclick = () => $('settings-panel').close();
+$('call-audio-settings').onclick = () => { openSettings(); $('audio-settings').open = true; $('audio-settings').scrollIntoView({ block: 'start' }); };
+$('phone-settings').oninput = () => { phonesDirty = true; $('phone-settings-status').textContent = 'Unsaved changes'; updateNewConversationButton(); };
+$('phone-settings').onsubmit = async event => {
+  event.preventDefault(); savingPhones = true; $('save-phones').disabled = true; updateNewConversationButton();
+  try {
+    const phones = Object.fromEntries(['owner', 'booker', 'organizer'].map(role => [role, $(`phone-${role}`).value]));
+    const saved = await accessRequest('phones', { method: 'POST', body: JSON.stringify({ phones }) });
+    for (const role of Object.keys(saved.phones)) $(`phone-${role}`).value = saved.phones[role];
+    phonesDirty = false; $('phone-settings-status').textContent = 'Saved. Choose New conversation to use these numbers.';
+  } catch (e) { $('phone-settings-status').textContent = e.message; }
+  finally { savingPhones = false; $('save-phones').disabled = false; updateNewConversationButton(); }
+};
+$('stop-session').onclick = () => $('end').click();
+$('dismiss-call').onclick = () => { dismissedCall = projection?.browserInvitation?.sid; ringtone.stop(); if (lastSnapshot) consume(lastSnapshot); };
+$('mute-call').onclick = () => { audio?.setMuted(!audio.muted); if (lastSnapshot) consume(lastSnapshot); };
 $('new-conversation').onclick = async () => {
+  if (phonesDirty || savingPhones) { openSettings(); return; }
   await ringtone.unlock();
   creatingConversation = true; updateNewConversationButton(); $('send').disabled = true;
   $('new-conversation').textContent = 'Creating conversation…'; $('notice').textContent = '';
@@ -410,10 +454,11 @@ $('new-conversation').onclick = async () => {
   try {
     const session = await accessRequest('conversations', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
     sessionStorage.removeItem('parley.pending-new-conversation');
-    await showManagedConversation(session, true);
+    await showManagedConversation(session, true); $('settings-panel').close();
   } catch (e) {
     if (e.status === 401) lockBrowser(); else error(e);
-    if (e.status === 409) sessionStorage.removeItem('parley.pending-new-conversation');
+    // Retain the request ID on validation failures too: enrollment may be
+    // corrected before retrying an already prepared conversation.
   }
   finally {
     creatingConversation = false; $('new-conversation').textContent = 'New conversation';
@@ -430,7 +475,7 @@ async function enableBrowser() {
   const grant = new URLSearchParams(location.hash.slice(1)).get('access');
   if (grant) history.replaceState(null, '', location.pathname + location.search);
   try {
-    await accessRequest('access'); unlockBrowser(); await loadManagedConversation();
+    await accessRequest('access'); unlockBrowser(); await loadPhones(); await loadManagedConversation();
   } catch (e) {
     lockBrowser(e.status === 401 ? undefined : e.message);
     if (e.status !== 401) $('retry-access').classList.remove('hidden');
@@ -440,7 +485,7 @@ $('password-form').addEventListener('submit', async event => {
   event.preventDefault(); $('sign-in').disabled = true; $('access-status').textContent = 'Signing in…';
   try {
     await accessRequest('session', { method: 'POST', body: JSON.stringify({ password: $('password').value }) });
-    $('password').value = ''; await ringtone.unlock(); unlockBrowser(); await loadManagedConversation();
+    $('password').value = ''; await ringtone.unlock(); unlockBrowser(); await loadPhones(); await loadManagedConversation();
   } catch (e) { $('access-status').textContent = e.message; }
   finally { $('sign-in').disabled = false; }
 });

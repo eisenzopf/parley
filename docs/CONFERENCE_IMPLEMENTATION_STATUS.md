@@ -1,3 +1,11 @@
+## Configurable phones and focused browser UI — October 12, 2026
+
+Password-authenticated Setup & settings now saves the owner, booker, and organizer phone numbers. New conversations snapshot the saved roster; existing conversations and pending creation retries retain their original destinations. Owner and organizer changes update both SIP and SMS, while booker changes update SIP. Server-provisioned carrier routing and existing SMS enrollment admission remain in force. Saving settings never places calls or sends messages.
+
+The main workspace centers the communication graph and conversation timeline. Task text, audio devices, people, history and supporting information live in a native modal side panel. A separate incoming-call card offers Answer and Not now; dismissing silences the invitation while keeping Answer available. Active browser calls expose mute, phone transfer and hangup, with mute preserved across microphone changes.
+
+Validation: 97 JavaScript tests; browser tests for authenticated settings/history, audio-device selection, and incoming/active call controls. UI call tests simulate signaling and do not dial real recipients. The browser-only deployment script verifies idle state, backs up assets, and rolls back on failure without restarting the media server.
+
 # Conference implementation evidence
 
 Current voice-only rehearsal: [steps and operator setup](CONFERENCE_VOICE_REHEARSAL.md).

@@ -41,11 +41,16 @@ export class BrowserAudio {
       if (this.peer !== peer) throw new Error('The browser call ended while changing microphone.');
       const sender = peer.getSenders().find(sender => sender.track?.kind === 'audio');
       if (!sender) throw new Error('This call has no microphone sender.');
+      replacement.getAudioTracks()[0].enabled = !this.muted;
       await sender.replaceTrack(replacement.getAudioTracks()[0]);
       const previous = this.media;
       this.media = replacement; this.microphoneId = deviceId; this.onStream(replacement);
       previous?.getTracks().forEach(track => track.stop());
     } catch (error) { replacement.getTracks().forEach(track => track.stop()); throw error; }
+  }
+  setMuted(muted) {
+    this.muted = !!muted;
+    this.media?.getAudioTracks().forEach(track => { track.enabled = !this.muted; });
   }
   async setSpeaker(deviceId) {
     if (typeof this.audio.setSinkId === 'function') await this.audio.setSinkId(deviceId);
@@ -71,7 +76,7 @@ export class BrowserAudio {
   resetPhoneMove() { this.phoneRequest = null; this.phoneConnid = null; }
   closeLocal() {
     this.media?.getTracks().forEach(track => track.stop()); this.peer?.close();
-    this.audio.srcObject = null; this.peer = null; this.media = null; this.connid = null;
+    this.audio.srcObject = null; this.peer = null; this.media = null; this.connid = null; this.muted = false;
     this.onStream(null);
   }
 }

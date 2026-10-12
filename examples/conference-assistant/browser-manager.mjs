@@ -13,6 +13,8 @@ import { checkTelnyxSms } from '../../scripts/preflight-telnyx-sms.mjs';
 import { requireFullSms } from '../../scripts/conference-worker-readiness.mjs';
 import { validatePasswordVerifier, verifyPassword } from './browser-password.mjs';
 
+import { phoneSettings, configurePhones } from './phone-settings.mjs';
+
 const prefix = '/v1/conference/browser';
 const cookieName = 'parley_browser';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -229,11 +231,21 @@ export class BrowserConversationManager {
         worker_failed: this.state.workerFailure?.cid === bundle.cid && !!this.state.workerFailure.blocked,
         worker_recovering: this.state.workerFailure?.cid === bundle.cid && !this.state.workerFailure.blocked && !this.worker?.ready } };
   }
+  configuredParticipants() { return this.state.phoneParticipants || this.participants; }
+  async savePhones(values) {
+    if (this.state.pending) throw fail(409, 'Finish the pending new conversation before changing numbers.');
+    let participants;
+    try { participants = configurePhones(this.participants, values); }
+    catch (error) { throw fail(400, error.message); }
+    this.state.phoneParticipants = participants;
+    await this.save();
+    return { phones: phoneSettings(participants) };
+  }
   async newConversation(requestId) {
     if (!/^[a-f0-9]{32}$/.test(requestId || '')) throw fail(400, 'A new-conversation request ID is required.');
     if (this.state.requests[requestId]) return this.view(this.state.requests[requestId]);
     if (this.state.pending && this.state.pending.request_id !== requestId) throw fail(409, 'A conversation is being created. Retry the pending request.');
-    this.state.pending ||= { request_id: requestId, previous: this.state.current?.cid || null };
+    this.state.pending ||= { request_id: requestId, previous: this.state.current?.cid || null, participants: this.configuredParticipants() };
     await this.save();
     const previous = this.state.current;
     await this.stopWorker();
@@ -254,7 +266,7 @@ export class BrowserConversationManager {
       }
     }
     const prepared = await this.provision({ statePath: resolve(this.stateDir, 'preparations', `${requestId}.json`),
-      bundleRoot: resolve(this.stateDir, 'conversations'), participants: this.participants,
+      bundleRoot: resolve(this.stateDir, 'conversations'), participants: this.state.pending.participants || this.participants,
       httpUrl: this.httpUrl, uctpUrl: this.uctpUrl, adminToken: this.adminToken, fetchImpl: this.fetchImpl, makeClient: this.makeClient });
     await this.withOwner(prepared.bundle, async client => {
       const { payload } = await client.request(client.command('conversation.preflight', prepared.bundle.cid));
@@ -293,6 +305,8 @@ export class BrowserConversationManager {
       }
       this.authenticated(req.headers);
       if (req.method === 'GET' && path === `${prefix}/access`) return respond(200, { authenticated: true });
+      if (req.method === 'GET' && path === `${prefix}/phones`) return respond(200, { phones: phoneSettings(this.configuredParticipants()) });
+      if (req.method === 'POST' && path === `${prefix}/phones`) return respond(200, await this.serial(() => this.savePhones(body.phones)));
       if (req.method === 'POST' && path === `${prefix}/logout`) {
         await this.serial(async () => { delete this.state.sessions[this.sessionKey(req.headers)]; await this.save(); });
         res.setHeader('set-cookie', `${cookieName}=; Path=${prefix}; HttpOnly; SameSite=Strict; Max-Age=0${this.origin.startsWith('https:') ? '; Secure' : ''}`);

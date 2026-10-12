@@ -14,15 +14,15 @@ const passwordVerifier = await createPasswordVerifier(password);
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'parley-browser-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const participants = ['owner', 'companion', 'booker', 'organizer', 'assistant'].map(role => ({ alias: role, name: role, role }));
+  const participants = ['owner', 'companion', 'booker', 'organizer', 'assistant'].map(role => ({ alias: role, name: role, role, ...(['owner', 'booker', 'organizer'].includes(role) ? { sip: `sip:+120255501${{ owner: '90', booker: '92', organizer: '91' }[role]}@sip.example` } : {}), ...(['owner', 'organizer'].includes(role) ? { sms: `+120255501${role === 'owner' ? '90' : '91'}` } : {}) }));
   let now = Date.now(), created = 0, launches = 0, stops = 0, active = 0, pendingSms = 0, mint = 0;
   const records = new Map(), commands = [], prep = new Map();
-  const bundle = cid => ({ cid, url: 'ws://127.0.0.1:7443', participants: participants.map(p => ({ ...p,
+  const bundle = (cid, roster = participants) => ({ cid, url: 'ws://127.0.0.1:7443', participants: roster.map(p => ({ ...p,
     participant_id: `${p.role}_${cid}`, subject: `${p.role}_${cid}`, token: `${p.role}-${cid}`, token_expires_at: now + 43200000 })) });
   const options = { stateDir: directory, participants, origin: 'https://conference.example', httpUrl: 'http://127.0.0.1:8080',
     uctpUrl: 'ws://127.0.0.1:7443', adminToken: 'private-admin-fixture', passwordVerifier, now: () => now,
-    provision: async args => { if (!prep.has(args.statePath)) { const b = bundle(`conv_${++created}`); prep.set(args.statePath, b); records.set(b.cid, 'open'); }
-      assert.deepEqual(args.participants, participants); return { bundle: prep.get(args.statePath) }; },
+    provision: async args => { if (!prep.has(args.statePath)) { const b = bundle(`conv_${++created}`, args.participants); prep.set(args.statePath, b); records.set(b.cid, 'open'); }
+      return { bundle: prep.get(args.statePath) }; },
     makeClient: (_url, token) => { const cid = token.match(/conv_\d+/)[0]; return { connect: async () => {}, close: () => {},
       snapshot: async () => ({ state: records.get(cid), participants: bundle(cid).participants }),
       command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
@@ -179,4 +179,26 @@ test('legacy failed state resumes, but closed conversations and pending replacem
   await f.manager.reconcileWorker(); assert.equal(f.counts().launches, 2);
   await f.manager.recordWorkerFailure('conv_old');
   assert.equal(f.manager.state.workerFailure.cid, 'conv_1');
+});
+
+test('saved phone settings require sign-in, survive restart and affect only new conversations', async t => {
+  const f = await fixture(t); await f.post('5'.repeat(32));
+  const original = structuredClone(f.manager.state.current);
+  const request = (phones, headers = { cookie: f.cookie, origin: f.options.origin }) => f.http('phones', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ phones }) });
+  const phones = { owner: '415-555-0100', booker: '+16505550101', organizer: '+14155550102' };
+  assert.equal((await request(phones, { origin: f.options.origin })).status, 401);
+  assert.equal((await request(phones, { cookie: f.cookie, origin: 'https://attacker.example' })).status, 403);
+  assert.equal((await request({ ...phones, owner: 'sip:evil@elsewhere' })).status, 400);
+  assert.equal((await request(phones)).status, 200);
+  assert.deepEqual(f.manager.state.current, original);
+  const reloaded = new BrowserConversationManager(f.options); await reloaded.init();
+  assert.equal(reloaded.configuredParticipants()[0].sms, '+14155550100');
+  await f.post('6'.repeat(32));
+  const current = f.manager.state.current;
+  assert.equal(current.participants.find(p => p.role === 'owner').sip, 'sip:+14155550100@sip.example');
+  assert.equal(current.participants.find(p => p.role === 'organizer').sms, '+14155550102');
+  assert.equal(current.participants.find(p => p.role === 'booker').sms, undefined);
+  assert.equal(f.commands.filter(c => ['session.invite', 'message.send'].includes(c.type)).length, 0);
+  f.manager.state.pending = { request_id: 'pending' };
+  assert.equal((await request(phones)).status, 409);
 });

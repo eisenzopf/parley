@@ -45,9 +45,14 @@ test('changing microphone replaces the existing sender and only retires the old 
     assert.deepEqual(constraints[0].audio.deviceId, { exact: 'studio-display' });
     assert.equal(constraints[0].audio.echoCancellation, true); assert.equal(stopped, 1);
     assert.equal(audio.media, streams[0]); assert.equal(updates[0], streams[0]);
+    audio.setMuted(true); assert.equal(audio.media.getAudioTracks()[0].enabled, false);
+    await audio.setMicrophone('muted-headset');
+    assert.equal(audio.media.getAudioTracks()[0].enabled, false, 'changing devices must preserve mute');
+    audio.setMuted(false); assert.equal(audio.media.getAudioTracks()[0].enabled, true);
+    const retained = audio.media;
     fail = true; await assert.rejects(audio.setMicrophone('headset'), /replacement failed/);
-    assert.equal(audio.media, streams[0]); assert.equal(replacementStopped, 1, 'only failed replacement is stopped');
-    assert.equal(audio.microphoneId, 'studio-display');
+    assert.equal(audio.media, retained); assert.equal(replacementStopped, 2, 'old and failed replacement tracks are stopped');
+    assert.equal(audio.microphoneId, 'muted-headset');
   } finally { if (original) Object.defineProperty(globalThis, 'navigator', original); else delete globalThis.navigator; }
 });
 

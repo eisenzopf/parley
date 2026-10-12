@@ -14,10 +14,10 @@ test('password sign-in connects the browser and enables new conversations withou
     origin: baseURL!, httpUrl: baseURL!, uctpUrl: 'ws://127.0.0.1:17443', adminToken: 'dev-only',
     passwordVerifier: await createPasswordVerifier('fixture browser password'),
     environment: { ...process.env, VAPI_PRIVATE_KEY: 'fixture-only-planning-key' }, participants: [
-      { alias: 'owner', name: 'Jonathan', role: 'owner', sms: '+12025550190' },
+      { alias: 'owner', name: 'Jonathan', role: 'owner', sip: 'sip:+12025550190@sip.example', sms: '+12025550190' },
       { alias: 'companion', name: 'Alex', role: 'companion' },
-      { alias: 'booker', name: 'Travel booker', role: 'booker' },
-      { alias: 'organizer', name: 'Organizer', role: 'organizer', sms: '+12025550191' },
+      { alias: 'booker', name: 'Travel booker', role: 'booker', sip: 'sip:+12025550192@sip.example' },
+      { alias: 'organizer', name: 'Organizer', role: 'organizer', sip: 'sip:+12025550191@sip.example', sms: '+12025550191' },
       { alias: 'assistant', name: 'David', role: 'assistant' },
     ] });
   await manager.init();
@@ -60,12 +60,23 @@ test('password sign-in connects the browser and enables new conversations withou
     await expect(page.locator('#setup')).toBeHidden(); await expect(page.locator('#token')).toHaveValue('');
     await expect(page.locator('#password')).toHaveValue('');
     await expect(page.getByRole('button', { name: 'Connect browser', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Setup & settings', exact: true }).click();
+    await expect(page.locator('#settings-panel')).toBeVisible();
+    await page.getByLabel('Jonathan', { exact: true }).fill('415-555-0100');
+    await page.getByLabel('Travel booker', { exact: true }).fill('415-555-0101');
+    await page.getByLabel('Conference organizer', { exact: true }).fill('415-555-0102');
+    await expect(page.locator('#new-conversation')).toBeDisabled();
+    await page.getByRole('button', { name: 'Save numbers', exact: true }).click();
+    await expect(page.locator('#phone-settings-status')).toContainText('Saved.');
+    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
     await page.getByRole('button', { name: 'New conversation', exact: true }).click();
     await expect(page.locator('#status')).toContainText('SMS fixture');
     await expect(page.locator('#notice')).toHaveText('');
     await expect(page.getByRole('button', { name: 'Start coordinating', exact: true })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Browser connected', exact: true })).toBeVisible();
     const first = new URL(page.url()).searchParams.get('cid')!;
+    expect(manager.state.current.participants.find(p => p.role === 'owner').sms).toBe('+14155550100');
+    expect(manager.state.current.participants.find(p => p.role === 'booker').sip).toBe('sip:+14155550101@sip.example');
     expect(first).toMatch(/^conv_/); expect(manager.worker?.ready).toBe(true);
     expect(await page.evaluate(() => document.cookie)).not.toContain('parley_browser');
     expect((await context.cookies()).find(c => c.name === 'parley_browser')?.httpOnly).toBe(true);
@@ -88,6 +99,7 @@ test('password sign-in connects the browser and enables new conversations withou
     await expect(page.getByRole('button', { name: 'Start coordinating', exact: true })).toBeEnabled();
     await expect(page.locator('#people .person')).toHaveCount(4);
     await expect(page.locator('#conversation-list option')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Setup & settings', exact: true }).click();
     await page.locator('#conversation-list').selectOption(first);
     await expect(page.locator('#status')).toContainText('Conversation closed');
     await expect(page.locator('#send')).toBeDisabled();
@@ -102,7 +114,9 @@ test('password sign-in connects the browser and enables new conversations withou
     await page.locator('#conversation-list').selectOption(second);
     await expect(page.locator('#status')).toContainText('Connected');
     await expect(page.locator('#notice')).toHaveText('');
+    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
     await page.screenshot({ path: 'test-results/conference-managed-current.png', fullPage: true });
+    await page.getByRole('button', { name: 'Setup & settings', exact: true }).click();
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await expect(page.locator('#password-form')).toBeVisible();
     await expect(page.locator('#task')).toBeHidden();
