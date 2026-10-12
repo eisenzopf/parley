@@ -736,3 +736,18 @@ test('a late final announcement fragment wakes recovery even after an earlier wa
   f.events.push({ seq: f.events.length + 1, event_type: 'session.transcript', payload: { sid: 'organizer_call', speaker: 'ai', is_final: true, text: 'Jonathan into the call now.' } });
   await worker.step(); assert.equal(f.plans(), 1); assert.equal(f.sent.length, 1);
 });
+
+test('managed fresh conversations ignore late SMS until the owner starts a task', async () => {
+  const sent = [], events = [{ seq: 1, event_type: 'message.received', payload: { from: 'organizer', body: 'Yes, I can pick them up.' } }];
+  const worker = new ConferenceWorker({ cid: 'conv_owner_start', requireOwnerStart: true,
+    client: { identity: 'assistant', snapshot: async (_cid, cursor) => ({ state: 'open', capabilities: {},
+      participants: [{ participant_id: 'owner', role: 'owner' }, { participant_id: 'ai', role: 'assistant', subject: 'assistant' }],
+      events: events.filter(e => e.seq > cursor) }),
+      command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }), request: async frame => { sent.push(frame); return { type: 'ack' }; } },
+    storage: { load: async () => ({ cursor: 0, events: [], pending: null }), save: async () => {} },
+    planner: { decide: async () => ({ actions: [{ type: 'message', to: ['owner'], delivery: 'chat', body: 'Starting your requested task.' }] }) },
+  });
+  await worker.step(); assert.equal(sent.length, 0);
+  events.push({ seq: 2, event_type: 'message.accepted', payload: { from: 'owner', to: ['ai'], content_type: 'text/plain', body: 'Start coordinating' } });
+  await worker.step(); assert.equal(sent.length, 1);
+});

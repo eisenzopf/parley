@@ -33,7 +33,7 @@ test(`conference task, owner approval, ${smsRecipients} SMS updates, and actual 
         ? [{ type: 'final_updates', proposal_id: context.approval.proposal_id, updates: context.participants.filter(m => m.role !== 'assistant').map(m => ({ to: m.participant_id, body: `${m.name}: revised arrival at terminal C, 5pm.` })) }]
         : [{ type: 'propose_arrangements', summary: 'Sandbox: alternate flight arriving at terminal C at 5pm; organizer pickup confirmed in this fixture.' }] }) },
     });
-    await page.goto('/conference/');
+    await page.goto('/conference/?manual=1');
     await page.locator('#url').fill('ws://127.0.0.1:17443');
     await page.locator('#cid').fill(cid); await page.locator('#token').fill(ownerToken);
     await page.getByRole('button', { name: 'Connect', exact: true }).click();

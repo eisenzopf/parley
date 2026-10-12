@@ -9,7 +9,7 @@ const browser = await chromium.launch({
 try {
   const page = await browser.newPage();
   page.on('console', message => console.error(message.text()));
-  await page.goto(`${fixture.http}/conference/`);
+  await page.goto(`${fixture.http}/conference/?manual=1`);
   const permissions = await page.context().newCDPSession(page);
   const { targetInfo } = await permissions.send('Target.getTargetInfo');
   await permissions.send('Browser.setPermission', { permission: { name: 'microphone' },

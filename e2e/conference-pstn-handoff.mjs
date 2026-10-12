@@ -18,7 +18,7 @@ const browser=await chromium.launch({channel:process.env.PARLEY_BROWSER_CHANNEL=
 let page;
 try {
   page=await browser.newPage({viewport:{width:1600,height:1100}});
-  await page.goto(`${fixture.http}/conference/`);
+  await page.goto(`${fixture.http}/conference/?manual=1`);
   await page.evaluate(synthetic => {
     const label=document.createElement('p');label.textContent=synthetic
       ? 'HARNESS CHECK · Synthetic SIP endpoint, generated browser speech. No PSTN or SMS.'

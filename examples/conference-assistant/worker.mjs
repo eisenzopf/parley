@@ -31,10 +31,10 @@ export class FileState {
 
 /** One worker per Conversation. Its only communications dependency is UCTP. */
 export class ConferenceWorker {
-  constructor({ client, cid, planner, storage, mode = 'full', log = () => {}, now = () => Date.now() }) {
+  constructor({ client, cid, planner, storage, mode = 'full', log = () => {}, now = () => Date.now(), requireOwnerStart = false }) {
     if (!['full', 'voice-only'].includes(mode)) throw new Error('Unknown conference demo mode');
     this.client = client; this.cid = cid; this.planner = planner; this.storage = storage; this.log = log;
-    this.now = now; this.mode = mode;
+    this.now = now; this.mode = mode; this.requireOwnerStart = requireOwnerStart;
   }
   async init() {
     this.state = await this.storage.load(this.cid);
@@ -207,6 +207,13 @@ export class ConferenceWorker {
     if (this.closed) return;
     // Drain a paged snapshot before planning from an incomplete event history.
     if (snapshot.events.length === 500) return;
+    if (this.requireOwnerStart && !this.state.events.some(e => ['message.accepted', 'message.received'].includes(e.event_type)
+      && e.payload.from === owner.participant_id && e.payload.to?.includes(this.self.participant_id)
+      && e.payload.content_type !== 'application/json')) {
+      this.state.needsDecision = false;
+      await this.storage.save(this.state);
+      return;
+    }
     // A restarted server cannot prove a remote call has ended. Keep both
     // planning and saved effects paused until an attributed owner reconciliation.
     const interrupted = new Set();
@@ -564,13 +571,20 @@ async function main() {
   await mkdir(dirname(statePath), { recursive: true, mode: 0o700 });
   const lock = await open(`${statePath}.lock`, 'wx', 0o600).catch(() => { throw new Error('Worker lock exists; verify the previous worker stopped before removing it'); });
   await lock.writeFile(String(process.pid));
-  const worker = new ConferenceWorker({ client, cid, planner, mode: process.env.CONFERENCE_DEMO_MODE || 'full', storage: new FileState(statePath), log: value => console.log(JSON.stringify(value)) });
+  const worker = new ConferenceWorker({ client, cid, planner, mode: process.env.CONFERENCE_DEMO_MODE || 'full', requireOwnerStart: process.env.CONFERENCE_REQUIRE_OWNER_START === '1', storage: new FileState(statePath), log: value => console.log(JSON.stringify(value)) });
   let stopped = false;
   const stop = () => { stopped = true; client.close(); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
   try {
+    await client.connect();
+    await worker.init();
+    await writeFile(`${statePath}.ready.json`, JSON.stringify({ pid: process.pid, cid }), { mode: 0o600 });
     await runWorkerLoop({ client, worker, stopped: () => stopped });
-  } finally { client.close(); await lock.close(); await unlink(`${statePath}.lock`); }
+  } finally {
+    client.close(); await lock.close();
+    await unlink(`${statePath}.ready.json`).catch(() => {});
+    await unlink(`${statePath}.lock`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(error => { console.error(error.message); process.exitCode = 1; });

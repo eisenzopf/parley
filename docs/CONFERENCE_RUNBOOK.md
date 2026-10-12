@@ -1001,3 +1001,37 @@ observers per host. A duplicate active subscription returns 409 and capacity
 exhaustion returns 429; cursor snapshots continue to work. When a lease expires
 or a transport stalls, recover from the last event actually received. A dropped
 end notice does not extend a lease or erase journal facts.
+
+## Browser-managed conversations
+
+The normal `/conference/` page now uses remembered browser access. An operator
+issues a one-use browser link through `POST /v1/conference/browser/grants` with
+administrator authentication. The link carries its grant in the URL fragment;
+the page removes the fragment before exchanging it for a Secure, HttpOnly,
+SameSite=Strict cookie. No administrator secret goes to the browser, and no
+participant token is typed, stored in localStorage, or exposed in the inspector.
+The access cookie lasts 30 days; conversation credentials renew automatically.
+
+Select **New conversation** to retire the idle previous run, keep its history,
+create a fresh Conversation using the reviewed server-side roster, and start a
+scoped assistant worker on the host. The page connects automatically. Enter the
+task and select **Start coordinating** when ready. New runs ignore late SMS until
+an attributed owner task arrives. Existing enrollment, sender/campaign checks,
+STOP handling, approval, and bounded booker retries still apply.
+
+The recent-conversation selector reopens owned history. New conversation is
+blocked during active or interrupted voice and while SMS outcomes are unsettled.
+Double clicks and retries after connection loss reuse durable creation IDs.
+Browser management requests require the same origin and the access cookie;
+arbitrary contacts or other Conversation IDs are not accepted.
+
+`parley-browser.service` runs the controller in
+`examples/conference-assistant/browser-manager.mjs`. Its children receive only
+scoped UCTP credentials and the planning key. Private roster, grants, cookies,
+preparation files, tokens, journals and worker logs live under
+`/opt/parley/state`; they are never public stage assets. Install with
+`infra/conference/install-browser-manager-host.sh` and publish stage assets
+separately. The existing Rust/media service does not need a restart.
+
+`?manual=1` retains the explicit connection controls for low-level fixtures and
+operator diagnostics. They are hidden from the normal browser flow.

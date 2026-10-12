@@ -7,7 +7,7 @@ test('unavailable ringtone audio does not block connecting, the invitation or th
       resume() { return new Promise(() => {}); }
     } as any;
   });
-  await page.goto('/conference/');
+  await page.goto('/conference/?manual=1');
   await page.evaluate(async () => {
     const { UctpClient } = await import('/uctp-client/client.mjs');
     const fixture = { requests: [], events: [
@@ -48,7 +48,7 @@ test('unavailable ringtone audio does not block connecting, the invitation or th
 // UI-only fixture. Database recovery, authorization and replay are separately
 // exercised against the real UCTP host in tests/uctp_conference.rs.
 test('interrupted call disables voice and records how the owner verified termination', async ({ page }) => {
-  await page.goto('/conference/');
+  await page.goto('/conference/?manual=1');
   await page.evaluate(async () => {
     const { UctpClient } = await import('/uctp-client/client.mjs');
     const fixture = {
@@ -102,7 +102,7 @@ test('interrupted call disables voice and records how the owner verified termina
 });
 
 test('organizer invitation stops ringing during control loss and stays disabled when recovery finds the call ended', async ({ page }) => {
-  await page.goto('/conference/');
+  await page.goto('/conference/?manual=1');
   await page.evaluate(async () => {
     const { UctpClient } = await import('/uctp-client/client.mjs');
     const { BrowserRingtone } = await import('/conference/ringtone.mjs');

@@ -10,7 +10,7 @@ const browser = await chromium.launch({ channel: (process.env.CI || process.env.
 let page;
 try {
   page = await browser.newPage({ viewport: { width: 1600, height: 1100 } });
-  await page.goto(`${fixture.http}/conference/`);
+  await page.goto(`${fixture.http}/conference/?manual=1`);
   await page.evaluate(() => {
     const label = document.createElement('p');
     label.textContent = 'AWS NETWORK TEST · Real WebRTC from this Mac; synthetic SIP audio on AWS. No PSTN or SMS.';

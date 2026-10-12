@@ -131,7 +131,7 @@ try {
     };
   });
   page.on('pageerror', error => { workerError ||= error; });
-  await page.goto(`${fixture.http}/conference/${voiceOnly ? '?mode=voice-only' : ''}`);
+  await page.goto(`${fixture.http}/conference/?manual=1${voiceOnly ? '&mode=voice-only' : ''}`);
   await page.evaluate(({ live, voice, recording }) => {
     const label = document.createElement('p'); label.textContent = voice
       ? 'LIVE VAPI PLANNING + VOICE · Synthetic local SIP participants. SMS is a fixture.' : live
@@ -337,10 +337,18 @@ try {
   assert.equal(phoneSpeaking.payload.details.join_confirmed, true);
   await new Promise(resolve => setTimeout(resolve, 500));
   const stable = await fixtureStats();
-  await new Promise(resolve => setTimeout(resolve, 500));
-  const phoneAudio = await fixtureStats();
+  // Give local media scheduling a bounded interval under browser/CPU load,
+  // while requiring multiple new audible frames in both directions.
+  const audioDeadline = Date.now() + 2000;
+  let phoneAudio = await fixtureStats();
+  while ((phoneAudio.phone_frames < stable.phone_frames + 5 || phoneAudio.owner_received_frames < stable.owner_received_frames + 5)
+    && Date.now() < audioDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    phoneAudio = await fixtureStats();
+  }
   assert.equal(phoneAudio.human_frames, stable.human_frames, 'Retired browser must no longer be audible');
-  assert.ok(phoneAudio.phone_frames > stable.phone_frames && phoneAudio.owner_received_frames > stable.owner_received_frames);
+  assert.ok(phoneAudio.phone_frames >= stable.phone_frames + 5 && phoneAudio.owner_received_frames >= stable.owner_received_frames + 5,
+    JSON.stringify({ before: stable, after: phoneAudio }));
   assert.equal(phoneAudio.phone_answered, 2); assert.equal(phoneAudio.ended, false);
   await page.screenshot({ path: `test-results/${screenshotPrefix}-phone-move.png`, fullPage: true });
   await pauseForRecording(3000);
