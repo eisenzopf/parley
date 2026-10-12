@@ -19,6 +19,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('hex');
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+export const RECOVERY_INTERVAL_MS = 5000;
 
 export class BrowserConversationManager {
   constructor({ stateDir, participants, origin, httpUrl, uctpUrl, adminToken, passwordVerifier, environment = process.env,
@@ -136,10 +137,39 @@ export class BrowserConversationManager {
   }
   async ensureWorker(bundle) {
     if (this.worker?.cid === bundle.cid && this.worker.ready) return;
-    if (this.state.workerFailure?.cid === bundle.cid) return;
+    const failure = this.state.workerFailure;
+    if (failure?.cid === bundle.cid && (failure.blocked || failure.retry_at > this.now())) return;
     await this.stopWorker();
-    await this.refreshBundle(bundle);
-    this.worker = await this.launchWorker(bundle);
+    try {
+      await this.refreshBundle(bundle);
+      this.worker = await this.launchWorker(bundle);
+      this.worker.startedAt = this.now();
+    } catch (error) {
+      await this.recordWorkerFailure(bundle.cid);
+      throw error;
+    }
+  }
+  async recordWorkerFailure(cid) {
+    if (this.state.current?.cid !== cid) return;
+    const attempts = (this.state.workerFailure?.cid === cid ? this.state.workerFailure.attempts || 0 : 0) + 1;
+    this.state.workerFailure = { cid, attempts, retry_at: this.now() + Math.min(60000, RECOVERY_INTERVAL_MS * 2 ** (attempts - 1)),
+      blocked: attempts >= 6 };
+    await this.save();
+  }
+  async reconcileWorker() {
+    const bundle = this.state.current;
+    if (!bundle || this.state.pending) return;
+    if (this.worker?.cid === bundle.cid && this.worker.ready) {
+      // Clear the crash budget only after sustained health, not merely startup.
+      if (this.state.workerFailure && this.now() - this.worker.startedAt >= 300000) {
+        this.state.workerFailure = null; await this.save();
+      }
+      const assistant = bundle.participants.find(p => p.role === 'assistant');
+      if (assistant.token_expires_at >= this.now() + 300000) return;
+    }
+    const snapshot = await this.withOwner(bundle, client => client.snapshot(bundle.cid));
+    if (snapshot.state === 'closed') { await this.stopWorker(); return; }
+    await this.ensureWorker(bundle);
   }
   async spawnWorker(bundle) {
     const directory = await this.bundleDirectory(bundle.cid), statePath = resolve(directory, 'worker-full.json');
@@ -168,7 +198,8 @@ export class BrowserConversationManager {
     } };
     child.on('exit', () => {
       worker.ready = false;
-      if (!stopping) this.serial(async () => { this.state.workerFailure = { cid: bundle.cid }; await this.save(); });
+      // Startup failures are recorded by ensureWorker; count a later exit once.
+      if (!stopping && worker.startedAt !== undefined) this.serial(() => this.recordWorkerFailure(bundle.cid)).catch(() => {});
     });
     child.on('error', () => { worker.ready = false; });
     for (let i = 0; i < 50; i++) {
@@ -195,7 +226,8 @@ export class BrowserConversationManager {
     return { authenticated: true, conversations, pending_request_id: this.state.pending?.request_id || null,
       current: { cid: bundle.cid, url: bundle.url, token: owner.token, owner_name: owner.name,
         state: snapshot.state, worker_ready: this.worker?.cid === bundle.cid && this.worker.ready === true,
-        worker_failed: this.state.workerFailure?.cid === bundle.cid } };
+        worker_failed: this.state.workerFailure?.cid === bundle.cid && !!this.state.workerFailure.blocked,
+        worker_recovering: this.state.workerFailure?.cid === bundle.cid && !this.state.workerFailure.blocked && !this.worker?.ready } };
   }
   async newConversation(requestId) {
     if (!/^[a-f0-9]{32}$/.test(requestId || '')) throw fail(400, 'A new-conversation request ID is required.');
@@ -301,12 +333,16 @@ async function main() {
   server.listen(Number(env.CONFERENCE_BROWSER_PORT || 8090), '127.0.0.1');
   await once(server, 'listening');
   console.log(JSON.stringify({ event: 'browser-manager.ready', port: server.address().port }));
-  const timer = setInterval(() => manager.serial(async () => {
-    const bundle = manager.state.current;
-    if (!bundle) return;
-    const assistant = bundle.participants.find(p => p.role === 'assistant');
-    if (assistant.token_expires_at < manager.now() + 300000) { await manager.stopWorker(); await manager.refreshBundle(bundle); await manager.ensureWorker(bundle); }
-  }).catch(() => {}), 60000);
+  // Coalesce ticks while a request/reconciliation is in flight. All launches
+  // share the manager queue and the worker's exclusive on-disk process lock.
+  let checking = false;
+  const timer = setInterval(() => {
+    if (checking) return;
+    checking = true;
+    manager.serial(() => manager.reconcileWorker())
+      .catch(() => console.error(JSON.stringify({ event: 'browser-manager.recovery_failed' })))
+      .finally(() => { checking = false; });
+  }, RECOVERY_INTERVAL_MS);
   const stop = async () => { clearInterval(timer); server.close(); await manager.stopWorker(); await unlink(lockPath); process.exit(0); };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
 }

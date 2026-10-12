@@ -346,6 +346,9 @@ export class ConferenceWorker {
     // A model may mistype an opaque ID. Give bounded validation feedback before
     // any effect is submitted; never replan an already pending/accepted batch.
     let batch, feedback;
+    const previousRejection = this.state.decisionRejections?.at(-1);
+    if (previousRejection && this.state.lastDecision?.cursor === this.state.cursor)
+      feedback = { reason: previousRejection.reason, previous_decision: this.state.lastDecision.decision };
     this.state.decisionRejections = [];
     for (let attempt = 1; attempt <= 3; attempt++) {
       const decision = await this.planner.decide({ ...context, ...(feedback ? { validation_feedback: feedback } : {}) });

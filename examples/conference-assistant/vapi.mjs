@@ -8,26 +8,28 @@ Help Jonathan and Alex coordinate with the booker and organizer. Do not invent r
 delivery receipts, or approval. Accepted/sent/delivered/confirmed are different states.
 Only use advertised capabilities. A false voice capability means voice is not available yet.
 Participants list available_channels; do not call a participant without a voice channel.
-Copy routing targets exactly from participants[].participant_id. A role or name is not a routing ID.
-call_participant.to is a single string, for example "part_abc". Never put it in an array.
+Use participants[].routing_target for routing, for example "@organizer" or "@booker".
+These exact aliases are resolved to this Conversation's participant IDs by the worker.
+Never construct, shorten, combine, or guess an opaque participant ID. Names are not routing targets.
+call_participant.to is a single string, for example "@booker". Never put it in an array.
 message.to is an array of strings. The two action shapes are intentionally different.
 Use the name of the assistant Participant as your own name; never rename yourself or another Participant.
-If validation_feedback is present, correct the rejected decision using those exact IDs and the stated contract;
+If validation_feedback is present, correct the rejected decision using the advertised routing_target aliases and the stated contract;
 no effects from that rejected decision have been executed.
 Return only a JSON array containing exactly one decision object with an actions array and a waiting_for string.
 Pretty-print the entire response with two-space indentation. Put the opening square bracket on its own line,
 then two spaces and the opening object brace on the next line. Do not use compact JSON or markdown fences.
 Allowed actions:
-- {"type":"message", "to":["participant ID"], "delivery":"chat"|"sms", "body":"text"}
+- {"type":"message", "to":["@organizer"], "delivery":"chat"|"sms", "body":"text"}
   Use this for coordination/questions. Use final_updates for final arrangement notifications.
 - {"type":"propose_arrangements", "summary":"sandbox itinerary and arrangements for approval"}
   This creates a proposal addressed to the owner; it does not book anything.
-- {"type":"final_updates", "proposal_id":"approved proposal ID", "updates":[{"to":"participant ID","body":"individual update"}]}
+- {"type":"final_updates", "proposal_id":"approved proposal ID", "updates":[{"to":"@owner","body":"individual update"}]}
   Exactly one update each for owner, companion, booker, organizer. Only after authoritative owner approval.
   The worker uses SMS only for enrolled SMS endpoints; participants without an SMS channel receive chat updates.
 - {"type":"complete_voice_rehearsal", "proposal_id":"approved proposal ID"}
   Only in demo_mode voice-only, after owner approval. Records completion to the owner in chat; SMS stays deferred.
-- {"type":"call_participant", "to":"participant ID", "purpose":"specific task and relevant known facts for this call"}
+- {"type":"call_participant", "to":"@booker", "purpose":"specific task and relevant known facts for this call"}
   Only when voice is advertised and there is no active voice Session. The server resolves the endpoint.
 - {"type":"end_voice", "sid":"active Session ID"}
   End a finished voice conversation before calling the next person.
@@ -154,6 +156,14 @@ export class VapiPlanner {
   }
 
   async decide(context) {
+    // Expose only unambiguous aliases from the authoritative roster. Do not
+    // fuzzy-match malformed IDs or resolve names supplied by the model.
+    const members = context.participants || [];
+    const routes = new Map(members.filter(p => ['owner', 'companion', 'booker', 'organizer', 'assistant'].includes(p.role)
+      && members.filter(other => other.role === p.role).length === 1)
+      .map(p => [`@${p.role}`, p.participant_id]));
+    const plannerContext = { ...context, participants: members.map(p => ({ ...p,
+      routing_target: routes.has(`@${p.role}`) ? `@${p.role}` : p.participant_id })) };
     let response;
     const started = performance.now(), signal = AbortSignal.timeout(this.requestTimeoutMs);
     const transportFailure = cause => {
@@ -170,7 +180,7 @@ export class VapiPlanner {
         // A transient assistant has no provider-native communications tools.
         assistant: { model: { provider: 'openai', model: this.model, temperature: 0, maxTokens: 4000,
           messages: [{ role: 'system', content: SYSTEM_PROMPT }], tools: [] } },
-        input: JSON.stringify(context),
+        input: JSON.stringify(plannerContext),
       }),
     }); } catch (cause) {
       throw transportFailure(cause);
@@ -197,6 +207,14 @@ export class VapiPlanner {
       [decision] = decision;
     }
     if (!decision || typeof decision !== 'object' || Array.isArray(decision) || !Array.isArray(decision.actions)) throw new Error('Invalid Vapi decision object; no actions executed');
-    return { ...decision, provider_chat_id: chat.id };
+    const target = value => routes.get(value) ?? value;
+    const actions = decision.actions.map(action => {
+      if (action?.type === 'message' && Array.isArray(action.to)) return { ...action, to: action.to.map(target) };
+      if (action?.type === 'call_participant') return { ...action, to: target(action.to) };
+      if (action?.type === 'final_updates' && Array.isArray(action.updates))
+        return { ...action, updates: action.updates.map(update => ({ ...update, to: target(update.to) })) };
+      return action;
+    });
+    return { ...decision, actions, provider_chat_id: chat.id };
   }
 }

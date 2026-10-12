@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ConferenceWorker, runWorkerLoop } from './worker.mjs';
 import { UctpError } from '../../clients/uctp-js/client.mjs';
+import { VapiPlanner } from './vapi.mjs';
 
 const confirmedVoice = () => [
   { event_type: 'session.invited', payload: { sid: 'ses_confirm', participant_id: 'organizer', connid: 'conn_organizer' } },
@@ -114,6 +115,56 @@ test('validation feedback repairs an invalid route before exactly one submission
   assert.equal(attempts, 2); assert.equal(sent.length, 1);
   assert.deepEqual(sent[0].payload.to, ['par_owner']); assert.equal(saved.decisionRejections.length, 1);
   await worker.step(); assert.equal(attempts, 2); assert.equal(sent.length, 1);
+});
+
+test('stalled post-booker SMS resumes with exact organizer routing and replays a lost acknowledgement once', async () => {
+  const organizer = 'part_03e0d29b0ff1492ea89a1721ca4651a2';
+  const booker = 'part_4ad462ab59a049a1aa1ecf5e336204bc';
+  const malformed = 'part_03e0d29b0ff149a1aa1ecf5e336204bc';
+  const participants = [{ participant_id: 'owner', role: 'owner' },
+    { participant_id: 'ai', role: 'assistant', subject: 'assistant' },
+    { participant_id: organizer, role: 'organizer', sms: '+14155550101' },
+    { participant_id: booker, role: 'booker', sip: 'sip:booker@example.invalid' }];
+  let saved = { cursor: 4, needsDecision: true, pending: null, events: [
+    { seq: 1, event_type: 'message.accepted', payload: { from: 'owner', to: ['ai'], body: 'Coordinate the trip' } },
+    { seq: 2, event_type: 'session.invited', payload: { sid: 'sess_booker', participant_id: booker } },
+    { seq: 3, event_type: 'session.transcript', payload: { sid: 'sess_booker', speaker: booker, text: 'American 2022 arrives at 4 PM terminal T.' } },
+    { seq: 4, event_type: 'session.ended', payload: { sid: 'sess_booker' } },
+  ] };
+  let plans = 0, repaired = false;
+  const sent = [], accepted = new Set();
+  const planner = new VapiPlanner({ apiKey: 'fixture', fetchImpl: async (_url, options) => {
+    plans++;
+    const input = JSON.parse(JSON.parse(options.body).input);
+    assert.equal(input.events.at(-1).event_type, 'session.ended');
+    if (repaired) assert.equal(input.validation_feedback.reason, 'Invalid recipients', 'rejection survives restart');
+    return Response.json({ output: [{ role: 'assistant', content: JSON.stringify({ actions: [
+      { type: 'message', to: [repaired ? '@organizer' : malformed], delivery: 'sms', body: 'Can you confirm pickup at 4 PM in terminal T?' },
+    ] }) }] });
+  } });
+  const options = { cid: 'conv_resume', planner, requireOwnerStart: true,
+    storage: { load: async () => structuredClone(saved), save: async s => { saved = structuredClone(s); } },
+    client: { identity: 'assistant', snapshot: async (_cid, cursor) => ({ state: 'open', participants,
+      events: saved.events.filter(e => e.seq > cursor), capabilities: {} }),
+      command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
+      request: async command => {
+        assert.equal(command.type, 'message.send', 'completed booker must not be called again');
+        assert.deepEqual(command.payload.to, [organizer]);
+        sent.push(command); accepted.add(command.id);
+        if (sent.length === 1) throw new UctpError('UCTP request timed out');
+        return { type: 'ack' };
+      } },
+  };
+  await assert.rejects(new ConferenceWorker(options).step(), /Invalid recipients/);
+  assert.equal(plans, 3); assert.equal(sent.length, 0);
+  repaired = true;
+  await assert.rejects(new ConferenceWorker(options).step(), /timed out/);
+  assert.equal(plans, 4); assert.ok(saved.pending);
+  const recovered = new ConferenceWorker(options);
+  await recovered.step(); await recovered.step();
+  assert.equal(plans, 4, 'pending effects must not be replanned');
+  assert.equal(accepted.size, 1); assert.equal(sent.length, 2);
+  assert.deepEqual(sent[0], sent[1]); assert.equal(saved.pending, null);
 });
 
 test('restart pauses saved effects and planning until the call is reconciled', async () => {

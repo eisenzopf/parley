@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { BrowserConversationManager } from './browser-manager.mjs';
+import { BrowserConversationManager, RECOVERY_INTERVAL_MS } from './browser-manager.mjs';
 import { createPasswordVerifier } from './browser-password.mjs';
 
 const password = 'fixture browser password';
@@ -137,4 +137,46 @@ test('renewing assistant credentials restarts only that worker and refreshes bro
   assert.match(session.current.token, /^renewed-owner_/); assert.equal(session.current.worker_ready, true);
   assert.deepEqual(f.counts(), { created: 1, launches: 2, stops: 1, mint: 2 });
   assert.equal(f.commands.filter(c => c.type === 'session.invite' || c.type === 'message.send').length, 0);
+});
+
+test('five-second reconciliation recovers a saved failure without a browser request or new conversation', async t => {
+  const f = await fixture(t); await f.post('2'.repeat(32));
+  await f.manager.stopWorker();
+  await f.manager.recordWorkerFailure('conv_1');
+  const reloaded = new BrowserConversationManager(f.options); await reloaded.init();
+  t.after(() => reloaded.stopWorker());
+  await reloaded.reconcileWorker(); assert.equal(f.counts().launches, 1);
+  f.advance(RECOVERY_INTERVAL_MS);
+  await Promise.all([reloaded.serial(() => reloaded.reconcileWorker()), reloaded.serial(() => reloaded.reconcileWorker())]);
+  assert.equal(f.counts().launches, 2); assert.equal(f.counts().created, 1);
+  assert.equal(reloaded.worker.cid, 'conv_1'); assert.equal(reloaded.worker.ready, true);
+  assert.equal(f.commands.filter(c => ['session.invite', 'message.send'].includes(c.type)).length, 0);
+  f.advance(300000); await reloaded.reconcileWorker(); assert.equal(reloaded.state.workerFailure, null);
+});
+
+test('recovery backs off across restart and repeated startup failure becomes visible', async t => {
+  const f = await fixture(t); await f.post('3'.repeat(32)); await f.manager.stopWorker();
+  let attempts = 0;
+  f.manager.launchWorker = async () => { attempts++; throw new Error('fixture startup failure'); };
+  for (let i = 1; i <= 6; i++) {
+    await assert.rejects(f.manager.reconcileWorker(), /startup failure/);
+    assert.equal(f.manager.state.workerFailure.attempts, i);
+    await f.manager.reconcileWorker(); assert.equal(attempts, i, 'must honor retry deadline');
+    f.advance(60000);
+  }
+  const reloaded = new BrowserConversationManager({ ...f.options, launchWorker: f.manager.launchWorker }); await reloaded.init();
+  await reloaded.reconcileWorker(); assert.equal(attempts, 6);
+  assert.equal((await reloaded.view()).current.worker_failed, true);
+});
+
+test('legacy failed state resumes, but closed conversations and pending replacements never restart', async t => {
+  const f = await fixture(t); await f.post('4'.repeat(32)); await f.manager.stopWorker();
+  f.manager.state.workerFailure = { cid: 'conv_1' }; await f.manager.save();
+  await f.manager.reconcileWorker(); assert.equal(f.counts().launches, 2);
+  await f.manager.stopWorker(); f.records.set('conv_1', 'closed');
+  await f.manager.reconcileWorker(); assert.equal(f.counts().launches, 2);
+  f.records.set('conv_1', 'open'); f.manager.state.pending = { request_id: 'fixture' };
+  await f.manager.reconcileWorker(); assert.equal(f.counts().launches, 2);
+  await f.manager.recordWorkerFailure('conv_old');
+  assert.equal(f.manager.state.workerFailure.cid, 'conv_1');
 });

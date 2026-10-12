@@ -39,6 +39,30 @@ test('credentials cannot be sent to arbitrary planner endpoints', () => {
   assert.throws(() => new VapiPlanner({ apiKey: 'fixture', endpoint: 'https://example.com/chat' }), /official API/);
 });
 
+test('routing aliases resolve only exact unique roster roles, never guessed IDs or names', async () => {
+  const participants = [
+    { role: 'organizer', participant_id: 'part_03e0d29b0ff1492ea89a1721ca4651a2' },
+    { role: 'booker', participant_id: 'part_4ad462ab59a049a1aa1ecf5e336204bc' },
+    { role: 'companion', participant_id: 'part_a' }, { role: 'companion', participant_id: 'part_b' },
+  ];
+  const malformed = 'part_03e0d29b0ff149a1aa1ecf5e336204bc';
+  const planner = new VapiPlanner({ apiKey: 'fixture', fetchImpl: async (_url, options) => {
+    const context = JSON.parse(JSON.parse(options.body).input);
+    assert.equal(context.participants[0].routing_target, '@organizer');
+    assert.equal(context.participants[2].routing_target, 'part_a');
+    return Response.json({ output: [{ role: 'assistant', content: JSON.stringify({ actions: [
+      { type: 'message', to: ['@organizer', malformed, '@companion', 'Organizer'], body: 'Pickup?' },
+      { type: 'call_participant', to: '@booker' },
+      { type: 'final_updates', updates: [{ to: '@organizer', body: 'Confirmed' }] },
+    ] }) }] });
+  } });
+  const { actions } = await planner.decide({ participants });
+  assert.deepEqual(actions[0].to, [participants[0].participant_id, malformed, '@companion', 'Organizer']);
+  assert.equal(actions[1].to, participants[1].participant_id);
+  assert.equal(actions[2].updates[0].to, participants[0].participant_id);
+  assert.equal(participants[0].routing_target, undefined, 'input is not mutated');
+});
+
 test('header and response-body failures expose only sanitized retry diagnostics', async () => {
   for (const phase of ['headers', 'body']) {
     const planner = new VapiPlanner({ apiKey: 'private-fixture', fetchImpl: async (_url, options) => {
