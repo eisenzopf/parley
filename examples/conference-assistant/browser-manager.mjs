@@ -1,6 +1,6 @@
 /** Browser access and worker supervision. Communications still use scoped UCTP. */
 import { createServer } from 'node:http';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readFile, writeFile, mkdir, rename, open, unlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -11,17 +11,17 @@ import { UctpClient } from '../../clients/uctp-js/client.mjs';
 import { workerEnvironment } from './environment.mjs';
 import { checkTelnyxSms } from '../../scripts/preflight-telnyx-sms.mjs';
 import { requireFullSms } from '../../scripts/conference-worker-readiness.mjs';
+import { validatePasswordVerifier, verifyPassword } from './browser-password.mjs';
 
 const prefix = '/v1/conference/browser';
 const cookieName = 'parley_browser';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const secret = () => randomBytes(32).toString('hex');
 const fail = (status, message) => Object.assign(new Error(message), { status });
-const sameSecret = (a, b) => typeof a === 'string' && timingSafeEqual(Buffer.from(hash(a)), Buffer.from(hash(b)));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export class BrowserConversationManager {
-  constructor({ stateDir, participants, origin, httpUrl, uctpUrl, adminToken, environment = process.env,
+  constructor({ stateDir, participants, origin, httpUrl, uctpUrl, adminToken, passwordVerifier, environment = process.env,
     initialBundle, initialWorkerState, mode = 'full', now = () => Date.now(), fetchImpl = fetch,
     provision = prepareConversation, makeClient = (url, token) => new UctpClient(url, token), launchWorker, providerCheck }) {
     if (!adminToken || !stateDir || !Array.isArray(participants)) throw new Error('Browser manager private configuration required');
@@ -30,6 +30,9 @@ export class BrowserConversationManager {
     if (!['full', 'voice-only'].includes(mode)) throw new Error('Unknown browser manager mode');
     Object.assign(this, { stateDir: resolve(stateDir), participants, origin, httpUrl, uctpUrl, adminToken,
       environment, initialBundle, initialWorkerState, mode, now, fetchImpl, provision, makeClient });
+    this.passwordVerifier = validatePasswordVerifier(passwordVerifier);
+    this.credentialId = hash(JSON.stringify(this.passwordVerifier));
+    this.loginAttempts = [];
     this.launchWorker = launchWorker || (bundle => this.spawnWorker(bundle));
     this.providerCheck = providerCheck || (async () => checkTelnyxSms(JSON.parse(await readFile(this.environment.CONFERENCE_BROWSER_SENDER_CONFIG, 'utf8')),
       { apiKey: this.environment.TELNYX_API_KEY || this.environment.TELNYX_TEST_API_KEY }));
@@ -56,6 +59,11 @@ export class BrowserConversationManager {
       await this.save();
     }
     if (this.state.version !== 1) throw new Error('Unsupported browser access state');
+    // Requiring a password also retires sessions and links from the old access-link flow.
+    this.state.grants = {};
+    this.state.sessions = Object.fromEntries(Object.entries(this.state.sessions).filter(([, session]) =>
+      session.credential_id === this.credentialId && session.expires_at > this.now()));
+    await this.save();
   }
   async writePrivate(path, value) {
     const temp = `${path}.${secret().slice(0, 12)}.tmp`;
@@ -69,29 +77,29 @@ export class BrowserConversationManager {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     return directory;
   }
-  authenticated(headers) {
+  sessionKey(headers) {
     const raw = (headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
-    const session = typeof raw === 'string' && /^[a-f0-9]{64}$/.test(raw) ? this.state.sessions[hash(raw)] : null;
-    if (!session || session.expires_at <= this.now()) throw fail(401, 'Open your private access link to enable this browser.');
+    return typeof raw === 'string' && /^[a-f0-9]{64}$/.test(raw) ? hash(raw) : '';
+  }
+  authenticated(headers) {
+    const session = this.state.sessions[this.sessionKey(headers)];
+    if (!session || session.credential_id !== this.credentialId || session.expires_at <= this.now())
+      throw fail(401, 'Sign in with your Parley password.');
     return session;
   }
   requireOrigin(headers) {
     if (headers.origin !== this.origin || (headers['sec-fetch-site'] && !['same-origin', 'none'].includes(headers['sec-fetch-site'])))
       throw fail(403, 'Use this page to manage your conversations.');
   }
-  async issueGrant() {
-    const grant = secret();
-    this.state.grants[hash(grant)] = { expires_at: this.now() + 12 * 60 * 60 * 1000 };
-    await this.save();
-    return { grant, expires_in: 43200 };
-  }
-  async redeem(grant) {
-    const key = typeof grant === 'string' && /^[a-f0-9]{64}$/.test(grant) ? hash(grant) : '';
-    const access = this.state.grants[key];
-    if (!access || access.expires_at <= this.now()) throw fail(401, 'This access link has expired or was already used.');
+  async login(password, headers) {
+    // A global bound also works behind the local proxy without trusting client IP headers.
+    this.loginAttempts = this.loginAttempts.filter(at => at > this.now() - 60000);
+    if (this.loginAttempts.length >= 10) throw fail(429, 'Too many sign-in attempts. Wait a minute and try again.');
+    this.loginAttempts.push(this.now());
+    if (!await verifyPassword(password, this.passwordVerifier)) throw fail(401, 'Incorrect password. Try again.');
     const session = secret();
-    delete this.state.grants[key];
-    this.state.sessions[hash(session)] = { expires_at: this.now() + 30 * 24 * 60 * 60 * 1000 };
+    delete this.state.sessions[this.sessionKey(headers)];
+    this.state.sessions[hash(session)] = { credential_id: this.credentialId, expires_at: this.now() + 30 * 24 * 60 * 60 * 1000 };
     await this.save();
     return session;
   }
@@ -239,10 +247,6 @@ export class BrowserConversationManager {
     res.setHeader('cache-control', 'no-store'); res.setHeader('referrer-policy', 'no-referrer');
     const respond = (status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
     try {
-      if (req.method === 'POST' && path === `${prefix}/grants`) {
-        if (!sameSecret(req.headers.authorization?.replace(/^Bearer /, ''), this.adminToken)) throw fail(401, 'Administrator access required.');
-        return respond(201, await this.serial(() => this.issueGrant()));
-      }
       if (req.method === 'POST') this.requireOrigin(req.headers);
       let body = {};
       if (req.method === 'POST') {
@@ -251,15 +255,24 @@ export class BrowserConversationManager {
         try { body = JSON.parse(raw || '{}'); } catch { throw fail(400, 'Invalid request.'); }
       }
       if (req.method === 'POST' && path === `${prefix}/session`) {
-        const session = await this.serial(() => this.redeem(body.grant));
+        const session = await this.serial(() => this.login(body.password, req.headers));
         res.setHeader('set-cookie', `${cookieName}=${session}; Path=${prefix}; HttpOnly; SameSite=Strict; Max-Age=2592000${this.origin.startsWith('https:') ? '; Secure' : ''}`);
         return respond(200, { authenticated: true });
       }
       this.authenticated(req.headers);
+      if (req.method === 'GET' && path === `${prefix}/access`) return respond(200, { authenticated: true });
+      if (req.method === 'POST' && path === `${prefix}/logout`) {
+        await this.serial(async () => { delete this.state.sessions[this.sessionKey(req.headers)]; await this.save(); });
+        res.setHeader('set-cookie', `${cookieName}=; Path=${prefix}; HttpOnly; SameSite=Strict; Max-Age=0${this.origin.startsWith('https:') ? '; Secure' : ''}`);
+        return respond(200, { authenticated: false });
+      }
       if (req.method === 'GET' && path === `${prefix}/session`) return respond(200, await this.serial(() => this.view(url.searchParams.get('cid') || undefined)));
       if (req.method === 'POST' && path === `${prefix}/conversations`) return respond(200, await this.serial(() => this.newConversation(body.request_id)));
       throw fail(404, 'Not found.');
-    } catch (error) { respond(error.status || 503, { error: error.status ? error.message : 'Could not connect to the conversation service. Please retry.' }); }
+    } catch (error) {
+      if (error.status === 429) res.setHeader('retry-after', '60');
+      respond(error.status || 503, { error: error.status ? error.message : 'Could not connect to the conversation service. Please retry.' });
+    }
   }
 }
 
@@ -269,6 +282,7 @@ async function main() {
     participants: JSON.parse(await readFile(env.CONFERENCE_BROWSER_ROSTER, 'utf8')),
     origin: env.CONFERENCE_BROWSER_ORIGIN, httpUrl: env.PARLEY_HTTP_URL || 'http://127.0.0.1:8080',
     uctpUrl: env.UCTP_URL, adminToken: env.PARLEY_API_SECRET, environment: env,
+    passwordVerifier: JSON.parse(await readFile(env.CONFERENCE_BROWSER_PASSWORD_FILE, 'utf8')),
     initialBundle: env.CONFERENCE_BROWSER_IMPORT ? JSON.parse(await readFile(env.CONFERENCE_BROWSER_IMPORT, 'utf8')) : undefined,
     initialWorkerState: env.CONFERENCE_BROWSER_IMPORT_WORKER ? JSON.parse(await readFile(env.CONFERENCE_BROWSER_IMPORT_WORKER, 'utf8')) : undefined,
     mode: env.CONFERENCE_DEMO_MODE || 'full' });

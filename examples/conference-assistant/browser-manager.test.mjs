@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { BrowserConversationManager } from './browser-manager.mjs';
+import { createPasswordVerifier } from './browser-password.mjs';
+
+const password = 'fixture browser password';
+const passwordVerifier = await createPasswordVerifier(password);
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'parley-browser-'));
@@ -16,7 +20,7 @@ async function fixture(t) {
   const bundle = cid => ({ cid, url: 'ws://127.0.0.1:7443', participants: participants.map(p => ({ ...p,
     participant_id: `${p.role}_${cid}`, subject: `${p.role}_${cid}`, token: `${p.role}-${cid}`, token_expires_at: now + 43200000 })) });
   const options = { stateDir: directory, participants, origin: 'https://conference.example', httpUrl: 'http://127.0.0.1:8080',
-    uctpUrl: 'ws://127.0.0.1:7443', adminToken: 'private-admin-fixture', now: () => now,
+    uctpUrl: 'ws://127.0.0.1:7443', adminToken: 'private-admin-fixture', passwordVerifier, now: () => now,
     provision: async args => { if (!prep.has(args.statePath)) { const b = bundle(`conv_${++created}`); prep.set(args.statePath, b); records.set(b.cid, 'open'); }
       assert.deepEqual(args.participants, participants); return { bundle: prep.get(args.statePath) }; },
     makeClient: (_url, token) => { const cid = token.match(/conv_\d+/)[0]; return { connect: async () => {}, close: () => {},
@@ -34,26 +38,65 @@ async function fixture(t) {
   t.after(async () => { await manager.stopWorker(); await new Promise(resolve => server.close(resolve)); });
   const url = `http://127.0.0.1:${server.address().port}/v1/conference/browser/`;
   const http = (path, options = {}) => fetch(url + path, options);
-  const grant = await (await http('grants', { method: 'POST', headers: { authorization: 'Bearer private-admin-fixture' } })).json();
-  const login = await http('session', { method: 'POST', headers: { origin: options.origin, 'content-type': 'application/json' }, body: JSON.stringify({ grant: grant.grant }) });
+  const signIn = (value, origin = options.origin) => http('session', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ password: value }) });
+  const login = await signIn(password);
   const cookie = login.headers.get('set-cookie').split(';')[0];
   const post = (id, origin = options.origin) => http('conversations', { method: 'POST', headers: { cookie, origin, 'content-type': 'application/json' }, body: JSON.stringify({ request_id: id, participants: [{ role: 'attacker', sms: '+14155559999' }] }) });
-  return { manager, options, http, post, cookie, grant, login, commands, records,
+  return { manager, options, http, post, cookie, login, signIn, commands, records,
     counts: () => ({ created, launches, stops, mint }), active: v => { active = v; }, sms: v => { pendingSms = v; }, advance: ms => { now += ms; } };
 }
 
-test('browser access is single-use, persistent, HttpOnly/Secure, and does not expose administrative credentials', async t => {
+test('password access is persistent, HttpOnly/Secure, and does not expose password or administrative credentials', async t => {
   const f = await fixture(t);
   assert.match(f.login.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/); assert.match(f.login.headers.get('set-cookie'), /Secure/);
   assert.equal((await f.http('session')).status, 401);
-  const duplicate = await f.http('session', { method: 'POST', headers: { origin: f.options.origin }, body: JSON.stringify({ grant: f.grant.grant }) });
-  assert.equal(duplicate.status, 401);
+  const linkLogin = await f.http('session', { method: 'POST', headers: { origin: f.options.origin }, body: JSON.stringify({ grant: 'a'.repeat(64) }) });
+  assert.equal(linkLogin.status, 401);
   const data = await (await f.http('session', { headers: { cookie: f.cookie } })).json();
   assert.equal(data.authenticated, true); assert.equal(data.current, null);
   assert.ok(!JSON.stringify(data).includes(f.options.adminToken));
   const saved = JSON.parse(await readFile(join(f.options.stateDir, 'browser-access.json'), 'utf8'));
-  assert.ok(!JSON.stringify(saved.grants).includes(f.grant.grant)); assert.ok(!JSON.stringify(saved.sessions).includes(f.cookie.slice('parley_browser='.length)));
+  assert.deepEqual(saved.grants, {}); assert.ok(!JSON.stringify(saved.sessions).includes(f.cookie.slice('parley_browser='.length)));
+  assert.ok(!JSON.stringify(saved).includes(password)); assert.ok(!JSON.stringify(saved).includes(passwordVerifier.hash));
   f.advance(31 * 86400000); assert.equal((await f.http('session', { headers: { cookie: f.cookie } })).status, 401);
+});
+
+test('wrong passwords, missing passwords, and cross-site login cannot obtain conversation access', async t => {
+  const f = await fixture(t);
+  for (const value of ['wrong password', '', undefined, { password }, 'x'.repeat(257)]) {
+    const rejected = await f.signIn(value); assert.equal(rejected.status, 401);
+    assert.equal(rejected.headers.get('set-cookie'), null);
+  }
+  assert.equal((await f.signIn(password, 'https://attacker.example')).status, 403);
+  assert.equal((await f.http('access')).status, 401);
+  assert.equal((await f.http('conversations', { method: 'POST', headers: { origin: f.options.origin }, body: JSON.stringify({ request_id: 'c'.repeat(32) }) })).status, 401);
+  assert.equal(f.counts().created, 0);
+  assert.equal((await f.http('access', { headers: { cookie: f.cookie } })).status, 200);
+  assert.throws(() => new BrowserConversationManager({ ...f.options, passwordVerifier: undefined }), /password configuration/);
+});
+
+test('password attempts are bounded and retrying works after the limit window', async t => {
+  const f = await fixture(t);
+  for (let i = 0; i < 9; i++) assert.equal((await f.signIn('wrong password')).status, 401);
+  const limited = await f.signIn(password); assert.equal(limited.status, 429); assert.equal(limited.headers.get('retry-after'), '60');
+  f.advance(61000); assert.equal((await f.signIn(password)).status, 200);
+});
+
+test('logout, enabling passwords, and password rotation revoke sessions while retaining conversation history', async t => {
+  const f = await fixture(t); await f.post('a'.repeat(32));
+  const logout = await f.http('logout', { method: 'POST', headers: { cookie: f.cookie, origin: f.options.origin } });
+  assert.equal(logout.status, 200); assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
+  assert.equal((await f.http('access', { headers: { cookie: f.cookie } })).status, 401);
+  const fresh = await f.signIn(password), cookie = fresh.headers.get('set-cookie').split(';')[0];
+  f.manager.state.sessions['a'.repeat(64)] = { expires_at: Date.now() + 86400000 };
+  f.manager.state.grants['b'.repeat(64)] = { expires_at: Date.now() + 86400000 };
+  await f.manager.save();
+  const reloaded = new BrowserConversationManager(f.options); await reloaded.init();
+  assert.equal(reloaded.state.sessions['a'.repeat(64)], undefined); assert.deepEqual(reloaded.state.grants, {});
+  assert.doesNotThrow(() => reloaded.authenticated({ cookie }));
+  const rotated = new BrowserConversationManager({ ...f.options, passwordVerifier: await createPasswordVerifier('rotated fixture password') });
+  await rotated.init(); assert.throws(() => rotated.authenticated({ cookie }), /Sign in/);
+  assert.deepEqual(rotated.state.sessions, {}); assert.equal(rotated.state.current.cid, 'conv_1'); assert.equal(rotated.state.conversations.length, 1);
 });
 
 test('New conversation creates fresh IDs, automatically starts its worker, retains history, and survives reload', async t => {

@@ -9,6 +9,7 @@ let client, audio, cid, me, assistant, projection, capabilities, selectedRoute, 
 const members = new Map(); const events = []; const traces = new Map(); const channels = new Map();
 const ringtone = new BrowserRingtone();
 let joining = false, browserAccess = false, creatingConversation = false, workerReady = true, lastSnapshot = null, connectingConversation = false;
+let loadingConversation = false, browserConnected = false;
 const defaultTask = $('task').value;
 
 const error = value => { $('notice').textContent = value?.message || String(value); };
@@ -29,9 +30,10 @@ function trace(direction, frame) {
 
 async function connectConversation(access) {
   connectingConversation = true; $('conversation-list').disabled = true;
+  browserConnected = false; updateNewConversationButton();
   $('notice').textContent = ''; ringtone.stop(); joining = false;
   try {
-    client?.close(); audio?.closeLocal(); activeSession = null; interruptedSession = null; $('recovery').classList.add('hidden'); $('join').disabled = true; $('end').disabled = true; cid = access.cid; cursor = 0; events.length = 0; traces.clear(); channels.clear();
+    client?.close(); audio?.closeLocal(); lastSnapshot = null; projection = null; activeSession = null; interruptedSession = null; $('recovery').classList.add('hidden'); $('join').disabled = true; $('end').disabled = true; cid = access.cid; cursor = 0; events.length = 0; traces.clear(); channels.clear();
     client = new UctpClient(access.url, access.token, { trace, timeoutMs: 20000 });
     await client.connect();
     const first = await client.snapshot(cid);
@@ -51,7 +53,7 @@ async function connectConversation(access) {
     $('correlation').textContent = `CONVERSATION  ${cid}`;
     consume(first); renderPeople();
     if (!polling) { polling = true; poll(); }
-  } catch (e) { client?.close(); error(e); throw e; }
+  } catch (e) { browserConnected = false; client?.close(); error(e); throw e; }
   finally { connectingConversation = false; updateNewConversationButton(); }
 }
 $('setup').addEventListener('submit', async event => {
@@ -60,7 +62,7 @@ $('setup').addEventListener('submit', async event => {
 });
 
 async function poll() {
-  if (connectingConversation) { setTimeout(poll, 750); return; }
+  if (connectingConversation || loadingConversation) { setTimeout(poll, 750); return; }
   const activeClient = client, activeCid = cid;
   try {
     if (activeClient && !activeClient.authenticated) {
@@ -76,9 +78,11 @@ async function poll() {
     }
   } catch (e) {
     if (activeClient === client && activeCid === cid) {
+      if (browserAccess && e.status === 401) { lockBrowser(); setTimeout(poll, 750); return; }
       if (browserAccess && [401, 403].includes(e.code)) activeClient.close();
       ringtone.stop(); $('join').disabled = true;
       $('browser-invitation').classList.add('hidden');
+      browserConnected = false; updateNewConversationButton();
       $('status').textContent = 'Connection interrupted · recovering'; renderStage(false); error(e);
     }
   }
@@ -87,12 +91,13 @@ async function poll() {
 
 function consume(snapshot) {
   lastSnapshot = snapshot;
+  browserConnected = client?.authenticated === true;
   capabilities = snapshot.capabilities;
   const needsSmsReview = !voiceOnly && capabilities.sms_enrollment_required;
   const eligible = new Set((snapshot.sms_eligibility || []).filter(e => e.eligible).map(e => e.participant_id));
   const smsReady = !needsSmsReview || (['owner', 'organizer'].every(role => snapshot.participants.some(m => m.role === role && m.sms && eligible.has(m.participant_id)))
     && snapshot.participants.filter(m => m.sms).every(m => eligible.has(m.participant_id)));
-  $('send').disabled = creatingConversation || snapshot.state === 'closed' || !smsReady || (browserAccess && !workerReady);
+  $('send').disabled = creatingConversation || loadingConversation || snapshot.state === 'closed' || !smsReady || (browserAccess && !workerReady);
   const build = capabilities.implementation;
   $('build-info').textContent = build
     ? `Rvoip ${stageText(build.rvoip_baseline)}${build.rvoip_patched ? ' + conference patches' : ''} · ${stageText(build.profile)} · UCTP v${build.envelope_version} / ${stageText(build.control_transport)}${build.experimental ? ' · experimental' : ''}`
@@ -320,9 +325,48 @@ async function accessRequest(path, options = {}) {
 }
 function updateNewConversationButton() {
   const live = projection && [...projection.sessions.values()].some(s => !['ended', 'failed'].includes(s.state));
-  $('new-conversation').disabled = !browserAccess || creatingConversation || connectingConversation || !!live;
-  $('conversation-list').disabled = creatingConversation || connectingConversation || !!live;
+  const busy = creatingConversation || connectingConversation || loadingConversation;
+  $('new-conversation').disabled = !browserAccess || busy || !!live;
+  $('conversation-list').disabled = busy || !!live;
+  $('sign-out').disabled = busy || !!live;
+  $('connect-browser').disabled = !browserAccess || busy || browserConnected || !!live;
+  $('connect-browser').textContent = connectingConversation || loadingConversation ? 'Connecting browser…' : browserConnected ? 'Browser connected' : 'Connect browser';
   $('new-conversation').title = live ? 'End the current voice call before starting a new conversation.' : '';
+  $('conversation-action-status').textContent = live ? interruptedSession
+    ? 'Verify the interrupted call has ended below, then you can start a new conversation.'
+    : 'End the current voice call to start a new conversation.' : '';
+}
+function lockBrowser(message = 'Enter your password to open your conversations.') {
+  browserAccess = false; browserConnected = false; client?.close(); client = null; audio?.closeLocal(); audio = null;
+  ringtone.stop(); projection = null; lastSnapshot = null;
+  document.body.classList.remove('presenting'); document.body.classList.add('access-locked');
+  $('browser-access').classList.remove('hidden'); $('password-form').classList.remove('hidden');
+  $('retry-access').classList.add('hidden'); $('sign-out').classList.add('hidden');
+  $('access-title').textContent = 'Sign in to Parley'; $('access-status').textContent = message;
+  $('notice').textContent = ''; $('status').textContent = 'Sign-in required'; $('status').className = 'status';
+  updateNewConversationButton();
+}
+function unlockBrowser() {
+  browserAccess = true; document.body.classList.remove('access-locked');
+  $('password-form').classList.add('hidden'); $('retry-access').classList.add('hidden');
+  $('sign-out').classList.remove('hidden'); $('access-title').textContent = 'Your conversations';
+  $('access-status').textContent = 'Loading your conversations…'; updateNewConversationButton();
+}
+async function loadManagedConversation() {
+  if (loadingConversation || creatingConversation || connectingConversation) return;
+  loadingConversation = true; updateNewConversationButton(); $('send').disabled = true;
+  const activeCid = new URL(location.href).searchParams.get('cid');
+  try {
+    const session = await accessRequest(activeCid ? `session?cid=${encodeURIComponent(activeCid)}` : 'session');
+    if (session.pending_request_id) sessionStorage.setItem('parley.pending-new-conversation', session.pending_request_id);
+    await showManagedConversation(session);
+  } catch (e) {
+    if (e.status === 401) { lockBrowser(); return; }
+    $('browser-access').classList.remove('hidden');
+    $('access-status').textContent = `${e.message} Retry loading, or select New conversation for a fresh run.`;
+    $('retry-access').classList.remove('hidden'); error(e); updateNewConversationButton();
+  }
+  finally { loadingConversation = false; if (lastSnapshot) consume(lastSnapshot); else updateNewConversationButton(); }
 }
 async function showManagedConversation(session, resetTask = false) {
   browserAccess = true;
@@ -343,6 +387,7 @@ async function showManagedConversation(session, resetTask = false) {
     if (current.worker_failed) error('The assistant stopped. Select New conversation to start a fresh run.');
   } else {
     $('access-status').textContent = 'Your browser is ready. Select New conversation to get started.';
+    $('status').textContent = 'Ready for a new conversation';
   }
   if (resetTask) { $('task').value = defaultTask; $('task-composer').open = true; $('send').textContent = 'Start coordinating'; }
   updateNewConversationButton();
@@ -357,7 +402,10 @@ $('new-conversation').onclick = async () => {
     const session = await accessRequest('conversations', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
     sessionStorage.removeItem('parley.pending-new-conversation');
     await showManagedConversation(session, true);
-  } catch (e) { error(e); }
+  } catch (e) {
+    if (e.status === 401) lockBrowser(); else error(e);
+    if (e.status === 409) sessionStorage.removeItem('parley.pending-new-conversation');
+  }
   finally {
     creatingConversation = false; $('new-conversation').textContent = 'New conversation';
     if (lastSnapshot) consume(lastSnapshot); else updateNewConversationButton();
@@ -367,22 +415,32 @@ $('conversation-list').onchange = async () => {
   try { await showManagedConversation(await accessRequest(`session?cid=${encodeURIComponent($('conversation-list').value)}`)); } catch (e) { error(e); }
 };
 async function enableBrowser() {
-  if (params.get('manual') === '1') { $('setup').classList.remove('hidden'); $('browser-access').classList.add('hidden'); return; }
+  if (params.get('manual') === '1' && ['localhost', '127.0.0.1'].includes(location.hostname)) {
+    document.body.classList.remove('access-locked'); $('setup').classList.remove('hidden'); $('browser-access').classList.add('hidden'); return;
+  }
   const grant = new URLSearchParams(location.hash.slice(1)).get('access');
   if (grant) history.replaceState(null, '', location.pathname + location.search);
-  const path = params.get('cid') ? `session?cid=${encodeURIComponent(params.get('cid'))}` : 'session';
   try {
-    let session;
-    try { session = await accessRequest(path); }
-    catch (e) {
-      if (!grant || e.status !== 401) throw e;
-      await accessRequest('session', { method: 'POST', body: JSON.stringify({ grant }) });
-      session = await accessRequest(path);
-    }
-    if (session.pending_request_id) sessionStorage.setItem('parley.pending-new-conversation', session.pending_request_id);
-    await showManagedConversation(session);
-  } catch (e) { $('access-status').textContent = e.message; }
+    await accessRequest('access'); unlockBrowser(); await loadManagedConversation();
+  } catch (e) {
+    lockBrowser(e.status === 401 ? undefined : e.message);
+    if (e.status !== 401) $('retry-access').classList.remove('hidden');
+  }
 }
+$('password-form').addEventListener('submit', async event => {
+  event.preventDefault(); $('sign-in').disabled = true; $('access-status').textContent = 'Signing in…';
+  try {
+    await accessRequest('session', { method: 'POST', body: JSON.stringify({ password: $('password').value }) });
+    $('password').value = ''; await ringtone.unlock(); unlockBrowser(); await loadManagedConversation();
+  } catch (e) { $('access-status').textContent = e.message; }
+  finally { $('sign-in').disabled = false; }
+});
+$('retry-access').onclick = () => browserAccess ? loadManagedConversation() : enableBrowser();
+$('connect-browser').onclick = () => loadManagedConversation();
+$('sign-out').onclick = async () => {
+  try { await accessRequest('logout', { method: 'POST' }); lockBrowser('Signed out. Enter your password to sign in again.'); }
+  catch (e) { error(e); }
+};
 
 enableBrowser();
 
@@ -395,5 +453,5 @@ setInterval(async () => {
     activeClient.token = session.current.token; workerReady = session.current.worker_ready;
     if (lastSnapshot) consume(lastSnapshot);
     if (session.current.worker_failed) error('The assistant stopped. Select New conversation to start a fresh run.');
-  } catch (e) { if (activeClient === client) error(e); }
+  } catch (e) { if (activeClient === client) { if (e.status === 401) lockBrowser(); else error(e); } }
 }, 60000);

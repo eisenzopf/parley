@@ -29,10 +29,13 @@
     body.presenting #contribution-panel.expanded h2,body.presenting #contribution-panel.expanded p{margin:12px 0}
   }
     #kit-share svg{width:180px;height:180px;background:white;flex:none}
+    body.access-locked main>:not(#browser-access):not(#notice),body.access-locked header .buttons>:not(#status){display:none!important}
+    body.access-locked #browser-access{max-width:440px;margin:7vh auto;padding:28px}#password-form{display:grid;gap:16px}#password-form button{justify-self:start}#access-status{color:#aab5c8;font-size:14px;line-height:1.5}#conversation-action-status{color:#aab5c8;font-size:13px}#conversation-action-status:empty{display:none}
 </style>
-<header><div><small>RUDELESS · VOIP 3.0</small><h1>Different networks. One Conversation.</h1><p>An assistant, four people, one shared interface.</p><p id="build-info" class="foot">Experimental UCTP profile · connect for build details.</p></div><div class="buttons"><select id="conversation-list" class="secondary hidden" aria-label="Recent conversations"></select><button id="new-conversation" disabled>New conversation</button><button id="presentation-view" class="secondary">Room view</button><span id="status" class="status">Not connected</span></div></header>
+<body class="access-locked">
+<header><div><small>RUDELESS · VOIP 3.0</small><h1>Different networks. One Conversation.</h1><p>An assistant, four people, one shared interface.</p><p id="build-info" class="foot">Experimental UCTP profile · connect for build details.</p></div><div class="buttons"><select id="conversation-list" class="secondary hidden" aria-label="Recent conversations"></select><button id="connect-browser" class="secondary" disabled>Connect browser</button><button id="new-conversation" disabled>New conversation</button><button id="presentation-view" class="secondary">Room view</button><button id="sign-out" class="secondary hidden">Sign out</button><span id="status" class="status">Connecting…</span></div></header>
 <main>
-  <div id="browser-access" class="panel"><strong>Your conversations</strong><p id="access-status">Connecting your browser…</p></div>
+  <div id="browser-access" class="panel"><h2 id="access-title">Sign in to Parley</h2><p id="access-status" role="status">Checking browser access…</p><form id="password-form" class="hidden"><label>Password<input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required></label><button id="sign-in">Sign in</button></form><button id="retry-access" class="secondary hidden">Retry connection</button></div>
   <form id="setup" class="setup hidden">
     <label>UCTP endpoint<input id="url" value="ws://127.0.0.1:7443" required></label>
     <label>Conversation ID<input id="cid" placeholder="conv_…" required></label>
@@ -40,6 +43,7 @@
     <button>Connect</button>
   </form>
   <div id="notice" class="notice" role="status"></div>
+  <p id="conversation-action-status" role="status"></p>
   <div id="correlation" class="cid">The Conversation ID stays with every interaction.</div>
   <section class="panel network-panel" aria-label="Observed network connections">
     <div class="network-heading"><h2 id="network-title">One Conversation, across the connections</h2><button id="show-live" class="secondary hidden">Return to live connections</button><div class="legend"><span class="control">Control / signaling</span><span>Audio bridge</span><span class="message">Messaging</span></div></div>

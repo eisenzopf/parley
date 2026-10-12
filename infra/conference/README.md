@@ -28,6 +28,28 @@ restricted to Telnyx US signaling addresses; RTP UDP 44000–44200 is restricted
 Telnyx's published media ranges. WebRTC DTLS media uses UDP 46000–46100. Refresh
 Telnyx addresses from `https://sip.telnyx.com/voice.json` before future deployments.
 
+## Browser sign-in and new conversations
+
+The hosted `parley-browser.service` accepts password sign-in at
+`/v1/conference/browser/session`. Install a private scrypt verifier at
+`/opt/parley/state/browser-password.json`, readable only by the service account,
+before running `install-browser-manager-host.sh`. Its environment points to that
+file with `CONFERENCE_BROWSER_PASSWORD_FILE`; missing or invalid configuration
+prevents startup. Generate the verifier with `createPasswordVerifier` from
+`examples/conference-assistant/browser-password.mjs`. Keep the password and
+verifier out of source archives, Git, command arguments and logs. Upload only the
+verifier through the private artifact bucket. Replacing it and restarting the
+browser service revokes all existing browser sessions without discarding history.
+
+The UI signs in, remembers access in a Secure/HttpOnly/SameSite cookie, and
+connects with an automatically scoped owner token. **Connect browser** retries
+an interrupted setup; **New conversation** creates a fresh conversation with the
+reviewed roster and an idle hosted worker. Only **Start coordinating** starts the
+task. New conversations cannot close active calls or unsettled SMS. Sign out
+revokes the remembered browser session. The earlier access-link flow is disabled,
+and old link sessions are retired. Password attempts are bounded to ten per
+minute across the service, independent of untrusted forwarding headers.
+
 ## Attendee kit publication
 
 Build a new source-only snapshot with

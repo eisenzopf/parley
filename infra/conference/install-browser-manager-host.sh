@@ -8,6 +8,7 @@ root=/opt/parley/browser-manager/releases/$release
 archive=/opt/parley/build/$release-browser.tar.gz
 node_archive=/opt/parley/build/$release-node.tar.xz
 test ! -e "$root"
+test -s /opt/parley/state/browser-password.json
 aws s3 cp "s3://$bucket/$code_key" "$archive" --only-show-errors
 aws s3 cp "s3://$bucket/$node_key" "$node_archive" --only-show-errors
 printf '%s  %s\n' "$code_sha" "$archive" | sha256sum --check
@@ -29,6 +30,7 @@ install -d -o parley -g parley -m 700 /opt/parley/state/browser-manager
 ln -sfn "$root/parley" /opt/parley/browser-manager/current
 cat > /etc/parley/browser-manager.env <<'ENV'
 CONFERENCE_BROWSER_STATE_DIR=/opt/parley/state/browser-manager
+CONFERENCE_BROWSER_PASSWORD_FILE=/opt/parley/state/browser-password.json
 CONFERENCE_BROWSER_ROSTER=/opt/parley/state/browser-roster.json
 CONFERENCE_BROWSER_ORIGIN=https://conference.rudeless.ai
 CONFERENCE_BROWSER_SENDER_CONFIG=/opt/parley/state/browser-sender-config.json
@@ -84,4 +86,10 @@ systemctl restart parley-browser
 systemctl reload caddy
 systemctl is-active parley-browser parley caddy
 curl --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8090/v1/conference/browser/session
-printf '\nBrowser manager installed; access still requires a private one-use browser link.\n'
+status=$(curl --silent --show-error --output "$root/access-check.json" --write-out '%{http_code}' http://127.0.0.1:8090/v1/conference/browser/access)
+[[ "$status" == 401 ]]
+python3 - "$root/access-check.json" <<'PY'
+import json,sys
+if json.load(open(sys.argv[1])).get('error')!='Sign in with your Parley password.':raise SystemExit('Password access gate missing')
+PY
+printf '\nBrowser manager installed; sign in with the private browser password.\n'
