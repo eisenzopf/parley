@@ -572,6 +572,35 @@ test('unavailable answering assistant ends after the closing audio despite conti
   assert.throws(() => worker.prepare({ actions: [{ type: 'propose_arrangements', summary: 'Invented arrangement' }] }), /wait for a new owner request/);
 });
 
+test('completed booking waits for the queued thank-you, not the previous readback stop or ten-second failure deadline', async () => {
+  const f = finishFixture(); f.events[2].payload.reason = 'completed';
+  const intent = f.events[2], previousStop = f.events[3]; previousStop.payload.state = 'stopped';
+  f.events[2] = { ...previousStop, seq: 3 }; f.events[3] = { ...intent, seq: 4 };
+  let worker = new ConferenceWorker(f.options); await worker.step();
+  f.setNow(20000); worker = new ConferenceWorker(f.options); await worker.step();
+  assert.equal(f.sent.length, 0, 'a stale stop cannot stand in for the closing audio');
+  f.add('session.speech', { speaker: 'ai', state: 'started' }); await worker.step();
+  f.add('session.transcript', { speaker: 'ai', is_final: true, text: 'Thank you for your help. Goodbye.' });
+  f.add('session.speech', { speaker: 'ai', state: 'stopped' }); await worker.step();
+  f.setNow(20249); await worker.step(); assert.equal(f.sent.length, 0);
+  f.setNow(20250); await worker.step(); assert.equal(f.sent.length, 1);
+});
+
+test('booker facts do not let the planner skip confirmation and closing or start organizer SMS early', async () => {
+  const f = finishFixture();
+  Object.assign(f.events[2], { event_type: 'session.transcript', payload: { sid: 'sess_call', speaker: 'remote', is_final: true,
+    text: 'Flight RD742, two seats, eleven to four, terminal C.' } });
+  f.events[3].payload.state = 'stopped'; f.events[4].payload.state = 'stopped';
+  const worker = new ConferenceWorker(f.options); await worker.step(); f.setNow(12000); await worker.step();
+  assert.equal(f.plans(), 0); assert.equal(f.sent.length, 0);
+  assert.throws(() => worker.prepare({ actions: [{ type: 'end_voice', sid: 'sess_call' }] }), /confirmation and closing/);
+  f.add('session.assistant_action', { source: 'vapi', participant_id: 'ai', action: 'finish_call', reason: 'completed' });
+  f.add('session.speech', { speaker: 'ai', state: 'started' }); await worker.step();
+  f.add('session.speech', { speaker: 'ai', state: 'stopped' }); await worker.step();
+  f.setNow(13500); await worker.step(); assert.equal(f.sent.length, 1); assert.equal(f.sent[0].type, 'session.end');
+  f.add('session.ended', {}); await worker.step(); assert.equal(f.plans(), 1, 'organizer planning resumes only after ended evidence');
+});
+
 test('closing deadline survives restart and ambiguous termination retries the identical command', async () => {
   const f = finishFixture(); let attempts = 0;
   f.client.request = async frame => { f.sent.push(frame); if (++attempts === 1) throw new UctpError('outcome may be unknown', { request: frame }); return { type: 'ack' }; };
@@ -732,6 +761,22 @@ test('spoken handoff without a tool wakes the planner after acknowledgement and 
   assert.deepEqual(JSON.parse(f.sent[0].payload.body), { type: 'travel.browser_invitation', version: 1, sid: 'organizer_call', retained_connid: 'organizer_connection' });
   worker = new ConferenceWorker(f.options); await worker.step(); await worker.step();
   assert.equal(f.sent.length, 1, 'replayed announcement cannot ring twice');
+});
+
+test('queued organizer announcement finishes before ringing and survives a worker restart', async () => {
+  const f = missingBrowserToolFixture({ announcement: 'One moment while I bring Jonathan into the conversation.' });
+  f.events[4].payload.state = 'stopped';
+  f.events.push({ seq: 7, event_type: 'session.assistant_action', payload: { sid: 'organizer_call', source: 'vapi',
+    participant_id: 'ai', action: 'request_browser_join', announcement_queued: true } });
+  let worker = new ConferenceWorker(f.options); await worker.step(); f.setNow(11500); await worker.step();
+  assert.equal(f.sent.length, 0, 'a stop before the tool cannot make a queued announcement complete');
+  const exact = worker.state.pending.requests[0].id;
+  f.events.push({ seq: 8, event_type: 'session.speech', payload: { sid: 'organizer_call', speaker: 'ai', state: 'started' } });
+  await worker.step(); f.stopSpeech(); await worker.step();
+  worker = new ConferenceWorker(f.options); f.setNow(12999); await worker.step(); assert.equal(f.sent.length, 0);
+  f.setNow(13000); await worker.step();
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].id, exact);
+  assert.equal(JSON.parse(f.sent[0].payload.body).sid, 'organizer_call'); assert.equal(f.plans(), 0);
 });
 
 test('a spoken announcement cannot replace pickup confirmation or ring from a greeting', async () => {

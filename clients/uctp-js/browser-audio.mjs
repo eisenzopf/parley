@@ -1,15 +1,16 @@
 /** Authorized server-offer WebRTC negotiation, entirely controlled through UCTP. */
 export class BrowserAudio {
-  constructor(client, cid, audioElement) {
+  constructor(client, cid, audioElement, { microphoneId = '', speakerId = '', onStream = () => {} } = {}) {
     this.client = client; this.cid = cid; this.audio = audioElement;
+    this.microphoneId = microphoneId; this.speakerId = speakerId; this.onStream = onStream;
   }
   async join(sid) {
     if (this.peer) throw new Error('Browser audio already active');
     this.sid = sid;
-    this.media = await navigator.mediaDevices.getUserMedia({ audio: {
-      echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 },
-    }, video: false });
+    this.media = await openMicrophone(this.microphoneId);
     try {
+      await this.setSpeaker(this.speakerId);
+      this.onStream(this.media);
       const offer = await this.client.request(this.client.command('session.update', this.cid, { kind: 'join_browser' }, { sid }));
       if (offer.type !== 'connection.offer' || offer.sid !== sid) throw new Error('Expected offer for the existing voice Session');
       this.connid = offer.connid;
@@ -32,6 +33,25 @@ export class BrowserAudio {
       this.closeLocal(); throw error;
     }
   }
+  async setMicrophone(deviceId) {
+    const peer = this.peer;
+    if (!peer) { this.microphoneId = deviceId; return; }
+    const replacement = await openMicrophone(deviceId);
+    try {
+      if (this.peer !== peer) throw new Error('The browser call ended while changing microphone.');
+      const sender = peer.getSenders().find(sender => sender.track?.kind === 'audio');
+      if (!sender) throw new Error('This call has no microphone sender.');
+      await sender.replaceTrack(replacement.getAudioTracks()[0]);
+      const previous = this.media;
+      this.media = replacement; this.microphoneId = deviceId; this.onStream(replacement);
+      previous?.getTracks().forEach(track => track.stop());
+    } catch (error) { replacement.getTracks().forEach(track => track.stop()); throw error; }
+  }
+  async setSpeaker(deviceId) {
+    if (typeof this.audio.setSinkId === 'function') await this.audio.setSinkId(deviceId);
+    else if (deviceId) throw new Error('Choose the speaker in your computer’s sound settings for this browser.');
+    this.speakerId = deviceId;
+  }
   async endSession() {
     try { return await this.client.request(this.client.command('session.end', this.cid, {}, { sid: this.sid })); }
     finally { this.closeLocal(); }
@@ -52,7 +72,15 @@ export class BrowserAudio {
   closeLocal() {
     this.media?.getTracks().forEach(track => track.stop()); this.peer?.close();
     this.audio.srcObject = null; this.peer = null; this.media = null; this.connid = null;
+    this.onStream(null);
   }
+}
+
+export async function openMicrophone(deviceId = '') {
+  return navigator.mediaDevices.getUserMedia({ audio: {
+    echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 },
+    ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+  }, video: false });
 }
 
 function waitState(peer, name, ready, ms, label) {

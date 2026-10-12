@@ -2450,6 +2450,7 @@ dependencies = [
  "rustls",
  "rvoip-auth-core",
  "rvoip-core",
+ "rvoip-media-core",
  "rvoip-sip",
  "rvoip-uctp",
  "rvoip-vapi",

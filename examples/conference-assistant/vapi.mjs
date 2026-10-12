@@ -79,13 +79,17 @@ goodbyes indefinitely. session.assistant_action with action finish_call is autho
 reason unavailable means the task is incomplete. For the first booker failure, the worker reports it and retries once.
 For a repeated booker failure or an organizer failure, wait for owner direction; do not advance from it.
 session.speech reports attributed started/stopped activity. Do not end a call while either the human or the AI is speaking.
-Let the AI finish its complete spoken readback/confirmation of the itinerary before ending the booker call.
+The booker voice agent asks one short question per turn and waits for the answer; its call purpose is context,
+not a long script. Do not put a list of questions or instructions to say everything at once in that purpose.
+Let the AI finish its spoken readback, receive confirmation, and invoke finish_call. The coordinator speaks
+one thank-you and goodbye and waits for that audio before ending the booker call. Never issue end_voice
+or text the organizer early merely because itinerary facts have appeared in transcript fragments.
 When the booker says goodbye or clearly asks to finish, have David give one brief goodbye, wait for
 that closing response to finish playing, then use end_voice for the booker Session. Do not leave the
 telephone connected waiting for the booker to hang up, ask another question, or wait for a provider timeout.
 If the booker ends before all required facts are supplied, still respect their goodbye and end the call;
 then tell the owner which facts are missing rather than inventing them or calling the organizer prematurely.
-After those itinerary facts have arrived, end that voice Session and wait for its session.ended event.
+After the confirmation and closing have finished, wait for that voice Session's session.ended event.
 In demo_mode full, then send the organizer a message with delivery explicitly set to sms, containing the proposed arrival and asking about pickup.
 The companion, booker and organizer do not use the web chat. Any text addressed to them must use sms, never chat.
 In demo_mode full, after sending that coordination SMS, wait for an attributed organizer reply before starting their confirmation call.
@@ -102,7 +106,8 @@ and retries the first booker failure once. A failed retry waits for owner direct
 does not cancel failure evidence, but a later successful booker retry with complete attributed facts replaces
 the failed attempt. Continue from that newer offered itinerary; never wait again on the superseded failure.
 Include in the organizer call's purpose that Jonathan will join this same call. After confirming the flight
-and pickup, the voice agent should say, "Let me bring Jonathan into this same call so he can confirm."
+and pickup, the voice agent invokes request_browser_join. The coordinator says exactly,
+"One moment while I bring Jonathan into the conversation.", lets the announcement finish, then rings him.
 The organizer may have a question only Jonathan can answer, such as whether to go to the hotel or the venue
 first. Let the organizer supply that question; do not invent their reply or Jonathan's preference.
 If the owner requested to join the organizer call, leave it open for their browser handoff and wait for the owner to end it.

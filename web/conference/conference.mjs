@@ -3,11 +3,19 @@ import { BrowserAudio } from '/uctp-client/browser-audio.mjs';
 import { ConversationProjection, stageText } from './projection.mjs';
 import { renderNetwork } from './network.mjs';
 import { BrowserRingtone } from './ringtone.mjs';
+import { AudioSettings } from './audio-settings.mjs';
 
 const $ = id => document.getElementById(id);
 let client, audio, cid, me, assistant, projection, capabilities, selectedRoute, selectedSeq, cursor = 0, activeSession = null, interruptedSession = null, proposal = null, polling = false, voiceOnly = false;
 const members = new Map(); const events = []; const traces = new Map(); const channels = new Map();
 const ringtone = new BrowserRingtone();
+const audioSettings = new AudioSettings({ root: $('audio-settings'), remoteAudio: $('remote-audio'),
+  setMicrophone: deviceId => audio?.setMicrophone(deviceId),
+  setSpeaker: async deviceId => {
+    if (audio) await audio.setSpeaker(deviceId);
+    else if (typeof $('remote-audio').setSinkId === 'function') await $('remote-audio').setSinkId(deviceId);
+  },
+});
 let joining = false, browserAccess = false, creatingConversation = false, workerReady = true, lastSnapshot = null, connectingConversation = false;
 let loadingConversation = false, browserConnected = false;
 const defaultTask = $('task').value;
@@ -45,7 +53,7 @@ async function connectConversation(access) {
     me = first.participants.find(m => m.subject === client.identity);
     assistant = first.participants.find(m => m.role === 'assistant');
     if (me?.role !== 'owner' || !assistant) throw new Error(browserAccess ? 'This browser could not access the conversation. Please reopen Parley.' : 'Use the owner participant token for this conference view');
-    audio = new BrowserAudio(client, cid, $('remote-audio'));
+    audio = new BrowserAudio(client, cid, $('remote-audio'), { ...audioSettings.preferences, onStream: stream => audioSettings.useCallStream(stream) });
     $('setup').classList.add('hidden'); $('browser-access').classList.add('hidden'); $('token').value = ''; document.body.classList.add('presenting'); $('presentation-view').textContent = 'Scroll view';
     $('status').textContent = voiceOnly ? 'Connected · Voice rehearsal · SMS deferred' : first.capabilities.sms_mode === 'fake' ? 'Connected · SMS fixture' : 'Connected · Telnyx SMS';
     $('status').className = `status ${first.capabilities.sms_mode === 'fake' ? 'fake' : 'ready'}`;
@@ -339,6 +347,7 @@ function updateNewConversationButton() {
 function lockBrowser(message = 'Enter your password to open your conversations.') {
   browserAccess = false; browserConnected = false; client?.close(); client = null; audio?.closeLocal(); audio = null;
   ringtone.stop(); projection = null; lastSnapshot = null;
+  audioSettings.close();
   document.body.classList.remove('presenting'); document.body.classList.add('access-locked');
   $('browser-access').classList.remove('hidden'); $('password-form').classList.remove('hidden');
   $('retry-access').classList.add('hidden'); $('sign-out').classList.add('hidden');

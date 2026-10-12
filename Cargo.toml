@@ -59,6 +59,7 @@ telnyx = { version = "0.1", default-features = false, features = ["messaging", "
 cloudflare = { version = "0.14", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
+rvoip-media-core = { path = "../rvoip-conference/crates/media/media-core", default-features = false }
 ed25519-dalek = "2.2"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

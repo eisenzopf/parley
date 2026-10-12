@@ -31,6 +31,7 @@
     #kit-share svg{width:180px;height:180px;background:white;flex:none}
     body.access-locked main>:not(#browser-access):not(#notice),body.access-locked header .buttons>:not(#status){display:none!important}
     body.access-locked #browser-access{max-width:440px;margin:7vh auto;padding:28px}#password-form{display:grid;gap:16px}#password-form button{justify-self:start}#access-status{color:#aab5c8;font-size:14px;line-height:1.5}#conversation-action-status{color:#aab5c8;font-size:13px}#conversation-action-status:empty{display:none}
+    #audio-settings{margin-top:12px;border:1px solid #37425a;border-radius:8px;padding:10px 12px}#audio-settings summary{cursor:pointer;font-size:13px;color:#c2ccdc}.audio-devices{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}.audio-devices select{width:100%;max-width:none}.mic-check{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}#mic-level{width:100px;height:12px}#mic-status{font-size:12px;color:#aab5c8}@media(max-width:600px){.audio-devices{grid-template-columns:1fr}}
 </style>
 <body class="access-locked">
 <header><div><small>RUDELESS · VOIP 3.0</small><h1>Different networks. One Conversation.</h1><p>An assistant, four people, one shared interface.</p><p id="build-info" class="foot">Experimental UCTP profile · connect for build details.</p></div><div class="buttons"><select id="conversation-list" class="secondary hidden" aria-label="Recent conversations"></select><button id="connect-browser" class="secondary" disabled>Connect browser</button><button id="new-conversation" disabled>New conversation</button><button id="presentation-view" class="secondary">Room view</button><button id="sign-out" class="secondary hidden">Sign out</button><span id="status" class="status">Connecting…</span></div></header>
@@ -63,6 +64,11 @@
       <p id="browser-invitation" class="proposal hidden" role="status" aria-live="assertive"></p>
       <div class="buttons voice-controls"><button id="join" class="secondary" disabled>Waiting for organizer call</button><button id="move-phone" class="secondary" disabled>Move to my phone</button><button id="cancel-phone" class="secondary hidden" disabled>Cancel phone move</button><button id="end" class="secondary" disabled>End voice</button></div>
       <p id="phone-status" class="foot" aria-live="polite"></p>
+      <details id="audio-settings"><summary>Audio settings · microphone and speaker</summary>
+        <div class="audio-devices"><label>Microphone<select id="microphone" aria-label="Microphone"><option value="">System default</option></select></label><label>Speaker<select id="speaker" aria-label="Speaker"><option value="">System default</option></select></label></div>
+        <div class="mic-check"><button id="check-mic" class="secondary">Check microphone</button><button id="test-speaker" class="secondary">Test speaker</button><meter id="mic-level" min="0" max="100" value="0" aria-label="Microphone level"></meter></div>
+        <p id="mic-status">Microphone inactive. Check it before answering.</p><p id="audio-status" class="foot" role="status">Choose your Mac, monitor, or headset. Headphones help when the organizer’s phone is nearby.</p>
+      </details>
       <div id="recovery" class="proposal hidden" role="status"><strong>Remote call status unknown</strong>
         <p>The server restarted during a call. The assistant is paused. Check the remote phone or provider console and end any remaining call before continuing.</p>
         <label>How did you verify the call ended?<input id="verification-note" maxlength="2000" placeholder="e.g. Organizer confirmed their phone is disconnected"></label>

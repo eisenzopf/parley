@@ -45,6 +45,11 @@ try {
     if (!recovered.original_bridge || recovered.ai_frames<=before.ai_frames+5 || recovered.provider_frames<=before.provider_frames+5) {
       throw new Error(`Failed handoff interrupted the original bidirectional audio: ${JSON.stringify({before,recovered})}`);
     }
+    // The real flow has silence while Jonathan answers. A telephone's playout
+    // clock continues through that pause, even with no assistant RTP packets.
+    const pause = await fetch('/__pause_assistant', { method: 'POST' });
+    if (pause.status !== 204) throw new Error('Could not pause the synthetic assistant');
+    await new Promise(resolve => setTimeout(resolve, 8000));
     // Use generated audio to prove the browser media path without a physical mic.
     const source = new AudioContext(); await source.resume();
     const oscillator = source.createOscillator(); oscillator.frequency.value = 880;

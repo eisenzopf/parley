@@ -191,6 +191,8 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
     let audio_url = format!("ws://{}/audio", audio_listener.local_addr().unwrap());
     let provider_received = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
     let provider_observed = provider_received.clone();
+    let announcements = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+    let announcement_observed = announcements.clone();
     let missing_handoff_tool =
         std::env::var("CONFERENCE_MISSING_HANDOFF_TOOL").as_deref() == Ok("1");
     let provider = tokio::spawn(async move {
@@ -198,9 +200,11 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
         for (index, transcript) in transcripts.into_iter().enumerate() {
             let (tcp, _) = audio_listener.accept().await.unwrap();
             let counts = provider_observed.clone();
+            let announcements = announcement_observed.clone();
             calls.push(tokio::spawn(async move {
                 let mut ws=tokio_tungstenite::accept_async(tcp).await.unwrap();
                 let mut tick=tokio::time::interval(Duration::from_millis(20));let mut position=0;
+                let mut announcement_stop = None;
                 loop {
                     tokio::select! {
                         _=tick.tick()=>{
@@ -214,11 +218,11 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                                     } else if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-browser-join","function":{"name":"request_browser_join","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
                                 } else {
                                     if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-finish-call","function":{"name":"finish_call","arguments":"{\"reason\":\"completed\"}"}}]}).to_string().into())).await.is_err(){break;}
-                                    if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"started"}).to_string().into())).await.is_err(){break;}
                                 }
                             }
-                            if index==0 && position==32000 {
+                            if announcement_stop == Some(position) {
                                 if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"stopped"}).to_string().into())).await.is_err(){break;}
+                                announcement_stop = None;
                             }
                         },
                         frame=ws.next()=>match frame {
@@ -227,6 +231,18 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                                 if samples.iter().any(|s|s.abs()>500) && (frequency(&samples,16000)-660.0).abs()<100.0 {counts[index].fetch_add(1,Ordering::SeqCst);}
                             },
                             Some(Ok(Message::Text(text))) if text.contains("end-call")=>{let _=ws.send(Message::Text(r#"{"type":"status-update","status":"ended"}"#.into())).await;break;},
+                            Some(Ok(Message::Text(text)))=>{
+                                let command:Value=serde_json::from_str(&text).unwrap();
+                                if command["type"] == "say" {
+                                    assert_eq!(command["content"], if index==0 {"Thank you for your help. Goodbye."} else {"One moment while I bring Jonathan into the conversation."});
+                                    assert_eq!(command["endCallAfterSpoken"], false, "UCTP owns teardown");
+                                    assert_eq!(command["interruptAssistantEnabled"], false, "finish the preceding confirmation");
+                                    assert_eq!(announcements[index].fetch_add(1,Ordering::SeqCst),0,"announce once");
+                                    if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"started"}).to_string().into())).await.is_err(){break;}
+                                    if ws.send(Message::Text(json!({"type":"transcript","role":"assistant","transcriptType":"final","transcript":command["content"]}).to_string().into())).await.is_err(){break;}
+                                    announcement_stop = Some(position + 16000);
+                                }
+                            },
                             Some(Ok(Message::Close(_)))|Some(Err(_))|None=>break,
                             _=>{},
                         }
@@ -264,7 +280,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 }
                 let finish = body["assistantOverrides"]["model"]["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "finish_call").unwrap();
                 assert_eq!(finish["async"], true);
-                assert_eq!(finish["messages"][0]["blocking"], true);
+                assert_eq!(finish["messages"], json!([]), "the coordinator queues exact announcement audio");
                 assert!(finish.get("server").is_none(), "only UCTP executes call termination");
                 assert!(prompt.contains("ask once whether they can connect you"));
                 assert!(n<2,"no duplicate provider calls");
@@ -472,6 +488,16 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
             .iter()
             .all(|count| count.load(Ordering::SeqCst) > 10));
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            announcements[0].load(Ordering::SeqCst),
+            1,
+            "booker receives one exact closing announcement"
+        );
+        assert_eq!(
+            announcements[1].load(Ordering::SeqCst),
+            usize::from(!missing_handoff_tool),
+            "organizer announcement precedes browser invitation"
+        );
     }
     let sessions = app.state.store.list_sessions("ten_local", &cid).unwrap();
     assert_eq!(sessions.len(), 2);

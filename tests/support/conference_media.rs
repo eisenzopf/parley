@@ -35,6 +35,8 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     let ws_url = format!("ws://{}/audio", ws_listener.local_addr().unwrap());
     let vapi_received = Arc::new(AtomicUsize::new(0));
     let received = vapi_received.clone();
+    let assistant_tone_enabled = Arc::new(AtomicBool::new(true));
+    let assistant_tone = assistant_tone_enabled.clone();
     let provider = tokio::spawn(async move {
         let (tcp, _) = ws_listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
@@ -43,6 +45,10 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
+                    // David finishes his announcement, then waits silently
+                    // while the owner answers the browser. No RTP payloads
+                    // are emitted during that pause.
+                    if !assistant_tone.load(Ordering::SeqCst) { continue; }
                     let pcm: Vec<u8> = tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes).collect();
                     position += 320;
                     if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
@@ -105,6 +111,8 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     let mut remote_cfg = SipConfig::on("organizer", remote_addr.ip(), remote_addr.port());
     remote_cfg.media_port_start = 45400;
     remote_cfg.media_port_end = 45600;
+    // Count audio a timed telephone receiver can play, rather than payloads
+    // that merely arrived. Late RTP after takeover must fail this gate.
     let mut endpoint = Endpoint::builder()
         .name("organizer")
         .profile(EndpointProfile::Custom(remote_cfg))
@@ -129,6 +137,12 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
         let (send, mut recv) = call.audio().await.unwrap().split();
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         let mut position = 0;
+        let mut playout = rvoip_media_core::processing::audio::playout::PlayoutBuffer::new(
+            rvoip_sip::PlayoutConfig {
+                adaptive: false,
+                ..Default::default()
+            },
+        );
         let mut requested_hangup = false;
         let end = call.wait_for_end(None);
         tokio::pin!(end);
@@ -141,13 +155,16 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
                 _=tick.tick()=>{
                     if send.send(EndpointAudioFrame::new(tone(660.0,8000,position),8000,1,position)).await.is_err() {break;}
                     position+=160;
+                    while let Some(frame) = playout.pop_due(std::time::Instant::now()) {
+                        if frame.samples.iter().any(|s|s.abs()>500) {
+                            let hz=frequency(&frame.samples,frame.sample_rate);
+                            if (hz-440.0).abs()<80.0 {ai_frames.fetch_add(1,Ordering::SeqCst);}
+                            if (hz-880.0).abs()<80.0 {human_frames.fetch_add(1,Ordering::SeqCst);}
+                        }
+                    }
                 },
                 frame=recv.recv()=>if let Some(frame)=frame {
-                    if frame.samples.iter().any(|s|s.abs()>500) {
-                        let hz=frequency(&frame.samples,frame.sample_rate);
-                        if (hz-440.0).abs()<80.0 {ai_frames.fetch_add(1,Ordering::SeqCst);}
-                        if (hz-880.0).abs()<80.0 {human_frames.fetch_add(1,Ordering::SeqCst);}
-                    }
+                    playout.push(frame.into(), std::time::Instant::now());
                 } else {break;}
             }
         }
@@ -214,14 +231,23 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
                 .filter(|event| event["event_type"] == "session.transcript")
                 .collect();
             if !transcripts.is_empty() {
-                let speech:Vec<_>=snapshot.payload["events"].as_array().unwrap().iter().filter(|event|event["event_type"]=="session.speech").collect();
-                assert_eq!(speech.len(),2,"speech activity must be published through UCTP");
-                assert_eq!(speech[0]["payload"]["state"],"started");
-                assert_eq!(speech[1]["payload"]["state"],"stopped");
+                let speech: Vec<_> = snapshot.payload["events"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event["event_type"] == "session.speech")
+                    .collect();
+                assert_eq!(
+                    speech.len(),
+                    2,
+                    "speech activity must be published through UCTP"
+                );
+                assert_eq!(speech[0]["payload"]["state"], "started");
+                assert_eq!(speech[1]["payload"]["state"], "stopped");
                 for event in speech {
-                    assert_eq!(event["payload"]["speaker"],members[3].participant_id);
-                    assert_eq!(event["payload"]["sid"],sid);
-                    assert_eq!(event["payload"]["source"],"vapi");
+                    assert_eq!(event["payload"]["speaker"], members[3].participant_id);
+                    assert_eq!(event["payload"]["sid"], sid);
+                    assert_eq!(event["payload"]["source"], "vapi");
                 }
                 assert_eq!(
                     transcripts.len(),
@@ -278,6 +304,9 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
             "provider_frames":observed_provider.load(Ordering::SeqCst),
         });
         async move {axum::Json(result)}
+    })).route("/__pause_assistant", axum::routing::post(move || {
+        assistant_tone_enabled.store(false, Ordering::SeqCst);
+        async { axum::http::StatusCode::NO_CONTENT }
     }));
     let web = tokio::spawn(async move {
         axum::serve(web_listener, router).await.unwrap();

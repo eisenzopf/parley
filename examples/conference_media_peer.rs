@@ -27,6 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg.media_port_end = 47500;
     // Match the deployed conference endpoint's single RTP/RTCP socket policy.
     cfg.rtcp_mux_required = true;
+    // Qualify audible playout across an AI silence/browser-answer pause.
+    // Receiving codec bytes alone misses audio whose RTP deadline has passed.
     let mut endpoint = Endpoint::builder()
         .name("network-probe")
         .profile(EndpointProfile::Custom(cfg))
@@ -47,6 +49,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ended = call.wait_for_end(None);
     tokio::pin!(ended);
     let began = Instant::now();
+    // Endpoint::audio exposes decoded frames directly. Drive a timed receiver
+    // here so the probe measures what a telephone can actually play.
+    let mut playout = rvoip_media_core::processing::audio::playout::PlayoutBuffer::new(
+        rvoip_sip::PlayoutConfig {
+            adaptive: false,
+            ..Default::default()
+        },
+    );
     loop {
         tokio::select! {
             result = &mut ended => { result?; break; },
@@ -56,10 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let samples=(0..160).map(|i| (7000.0*(std::f64::consts::TAU*660.0*(position+i) as f64/8000.0).sin()) as i16).collect();
                 if send.send(EndpointAudioFrame::new(samples,8000,1,position)).await.is_err(){break;}
                 position+=160;
-            },
-            frame=recv.recv()=>match frame {
-                Some(frame)=>{
-                    total+=1;
+                while let Some(frame) = playout.pop_due(Instant::now()) {
                     let (mut sin,mut cos,mut energy)=(0.0,0.0,0.0);
                     for (i,s) in frame.samples.iter().enumerate(){
                         let phase=std::f64::consts::TAU*880.0*i as f64/frame.sample_rate as f64;
@@ -70,6 +77,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         frames+=1;
                         if first==0 {first=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();}
                     }
+                }
+            },
+            frame=recv.recv()=>match frame {
+                Some(frame)=>{
+                    total+=1;
+                    playout.push(frame.into(), Instant::now());
                 },
                 None=>{tokio::time::timeout(Duration::from_secs(5), &mut ended).await??;break;}
             }

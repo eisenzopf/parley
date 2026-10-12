@@ -51,7 +51,7 @@ export class ConferenceWorker {
       this.state.events.push(event); this.state.cursor = event.seq;
       if (event.event_type === 'session.transcript' && event.payload.speaker === this.self.participant_id
         && event.payload.is_final === true && this.browserJoinAnnouncement(event.payload.sid)) this.state.needsDecision = true;
-      if (event.event_type === 'session.assistant_action' && event.payload.action === 'finish_call') {
+      if (event.event_type === 'session.assistant_action' && ['finish_call', 'request_browser_join'].includes(event.payload.action)) {
         this.state.finishObservedAt ??= {};
         this.state.finishObservedAt[event.seq] = this.now();
       }
@@ -98,7 +98,7 @@ export class ConferenceWorker {
     const spoken = facts.map(e => e.payload.text).join(' ');
     // This only wakes the planner. It does not establish pickup or authorize a
     // handoff; the planner must check the organizer's attributed confirmation.
-    return /\b(?:i['’]ll|i will|let me)\s+bring\s+jonathan\s+(?:in\b|into\s+(?:(?:this|the|same)\s+)*call\b)/i.test(spoken)
+    return /\b(?:i['’]ll|i will|let me|while i)\s+bring\s+jonathan\s+(?:in\b|into\s+(?:(?:this|the|same)\s+)*(?:call|conversation)\b)/i.test(spoken)
       ? facts.at(-1) : null;
   }
 
@@ -121,16 +121,32 @@ export class ConferenceWorker {
     return ai && remote ? { seq: Math.max(ai.seq, remote.seq), payload: { sid, reason: 'participant_goodbye' } } : null;
   }
 
-  finishReady(intent) {
+  announcementReady(intent, deadline = 10000) {
     this.state.finishObservedAt ??= {};
     this.state.finishObservedAt[intent.seq] ??= this.now();
     const elapsed = this.now() - this.state.finishObservedAt[intent.seq];
     const speech = this.state.events.findLast(e => e.event_type === 'session.speech'
       && e.payload.sid === intent.payload.sid && e.payload.speaker === this.self.participant_id);
-    // Remote speech must not restart the closing clock. Give the tool's goodbye
-    // time to play, with a deadline if the provider loses its stopped event.
-    return elapsed >= 10000 || (elapsed >= 1500 && speech?.payload.state === 'stopped'
+    // A stop from the readback before the tool is not the announcement's stop.
+    // Remote speech cannot restart this clock and keep an answering AI alive.
+    return elapsed >= deadline || (elapsed >= 1500 && speech?.seq > intent.seq && speech.payload.state === 'stopped'
       && this.now() - (this.state.assistantSpeechObservedAt?.[intent.payload.sid] ?? this.now()) >= 250);
+  }
+
+  finishReady(intent) {
+    // A completed booking may have a full readback queued before the exact
+    // closing announcement; unavailable answering assistants stay bounded.
+    return this.announcementReady(intent, intent.payload.reason === 'completed' ? 30000 : 10000);
+  }
+
+  activeBookerWithFinishTool() {
+    const booker = this.members.find(m => m.role === 'booker');
+    const call = this.state.events.findLast(e => e.event_type === 'session.invited' && e.payload.participant_id === booker?.participant_id);
+    if (!call) return null;
+    const facts = this.state.events.filter(e => e.payload.sid === call.payload.sid);
+    if (facts.some(e => ['session.ended', 'session.failed', 'session.assistant_failed'].includes(e.event_type))) return null;
+    return facts.some(e => e.event_type === 'session.assistant_actions' && e.payload.source === 'vapi'
+      && e.payload.participant_id === this.self.participant_id && e.payload.actions?.includes('finish_call')) ? call : null;
   }
 
   bookerFailure() {
@@ -260,6 +276,9 @@ export class ConferenceWorker {
       await this.executePending();
       return;
     }
+    // The voice agent owns the paced questions, readback and closing. A second
+    // model must not end the booker call or text the organizer from fragments.
+    if (this.activeBookerWithFinishTool()) return;
     const bookerFailure = this.bookerFailure();
     if (bookerFailure) {
       if (this.state.bookerRecoveries?.[bookerFailure.sid]) return;
@@ -451,6 +470,8 @@ export class ConferenceWorker {
         batch.requests.push(this.client.command('session.invite', this.cid, { medium: 'voice', to: action.to, purpose: action.purpose }, { id: `env_${seed}_${batch.requests.length}` }));
       } else if (action.type === 'end_voice') {
         if (!this.capabilities?.operations?.includes('session.end') || !this.state.events.some(e => e.event_type === 'session.invited' && e.payload.sid === action.sid)) throw new Error('Unknown voice Session');
+        if (this.activeBookerWithFinishTool()?.payload.sid === action.sid && !this.finishIntent(action.sid))
+          throw new Error('The booker voice agent must finish its confirmation and closing before ending this call');
         if (this.mode === 'voice-only' && this.state.events.some(e => e.event_type === 'session.invited' && e.payload.sid === action.sid
           && this.members.find(m => m.participant_id === e.payload.participant_id)?.role === 'organizer') && !this.finishIntent(action.sid))
           throw new Error('The owner ends the organizer call after browser and phone handoff; leave it open');
@@ -491,6 +512,15 @@ export class ConferenceWorker {
           }
           if (!this.finishReady(intent)) { await this.storage.save(this.state); return; }
         } else if (this.voiceBusy()) return;
+        if (browserInvitation) {
+          const sid = JSON.parse(request.payload.body).sid;
+          const intent = this.state.events.find(e => e.event_type === 'session.assistant_action'
+            && e.payload.sid === sid && e.payload.participant_id === this.self.participant_id
+            && e.payload.source === 'vapi' && e.payload.action === 'request_browser_join');
+          if (intent?.payload.announcement_queued === true && !this.announcementReady(intent, 15000)) {
+            await this.storage.save(this.state); return;
+          }
+        }
         if (browserInvitation && Array.isArray(batch.attempted) && !batch.attempted.includes(request.id)) {
           const sid = JSON.parse(request.payload.body).sid;
           if (this.state.events.some(e => e.payload.sid === sid
