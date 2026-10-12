@@ -293,7 +293,7 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
                 http.get(url.clone())
             } else {
                 http.get("https://api.vapi.ai/call")
-                    .query(&[("assistantId", assistant_id.as_str()), ("limit", "10")])
+                    .query(&[("limit", "50")])
             };
             if let Ok(response) = request.bearer_auth(&key).send().await {
                 if response.status().is_success() {
@@ -306,7 +306,7 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
                         for call in calls {
                             if call["metadata"]["conversation_id"] != check_cid
                                 || call["metadata"]["session_id"] != check_sid
-                                || call["assistantId"] != assistant_id
+                                || call["metadata"]["voice_profile"] != "conference-voice/2"
                                 || call["type"] != "vapi.websocketCall"
                             {
                                 continue;

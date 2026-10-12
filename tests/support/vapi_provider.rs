@@ -4,7 +4,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 pub async fn verify_ended_calls(
     key: &str,
-    assistant: &str,
+    _assistant: &str,
     cid: &str,
     sessions: &[String],
 ) -> Result<usize, &'static str> {
@@ -22,7 +22,7 @@ pub async fn verify_ended_calls(
     while tokio::time::Instant::now() < deadline {
         let response = http
             .get("https://api.vapi.ai/call")
-            .query(&[("assistantId", assistant), ("limit", "25")])
+            .query(&[("limit", "50")])
             .bearer_auth(key)
             .send()
             .await
@@ -48,7 +48,7 @@ pub async fn verify_ended_calls(
         if matching.len() == expected.len()
             && actual == expected
             && matching.iter().all(|c| {
-                c["assistantId"] == assistant
+                c["metadata"]["voice_profile"] == "conference-voice/2"
                     && c["type"] == "vapi.websocketCall"
                     && c["status"] == "ended"
                     && c["endedAt"].as_str().is_some_and(|s| !s.is_empty())

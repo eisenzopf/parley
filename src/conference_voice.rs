@@ -632,17 +632,23 @@ pub async fn attach_vapi(
         // transport. The attributed tool event below queues the exact audio.
         "messages":[]
     }));
-    let options=VapiCallOptions::new(VapiAssistant::saved_with_overrides(state.config.vapi_assistant_id.clone(),json!({
+    // Saved-assistant overrides merge tools instead of replacing them. Use a
+    // transient definition so legacy webhook tools and prompts cannot leak
+    // into this coordinator-owned call. Voice/transcriber use provider defaults
+    // just as the existing saved conference assistant does.
+    let options=VapiCallOptions::new(VapiAssistant::transient(json!({
+        "name":"Parley conference David",
         "model":{"provider":"openai","model":"gpt-4o-mini","messages":[{"role":"system","content":prompt}],"tools":tools},
         "firstMessage":format!("Hello, I'm {}, Jonathan's AI assistant. Is now a good time?",assistant.name),
         "endCallPhrases":[],
+        "endCallFunctionEnabled":false,
         // The organizer waits while the coordinator invites the browser. Keep
         // that normal pause alive; the owner still explicitly ends the Session.
         "silenceTimeoutSeconds":if target.role == "organizer" { 180 } else { 30 },
         "maxDurationSeconds":600,
         "serverMessages":[],"clientMessages":["transcript","status-update","speech-update","tool-calls"]
     }))).with_audio_format(VapiAudioFormat::PcmS16Le16Khz).with_name("Parley conference")
-      .with_metadata(json!({"conversation_id":voice.conversation_id,"session_id":voice.session_id,"participant_id":voice.assistant_participant_id}));
+      .with_metadata(json!({"conversation_id":voice.conversation_id,"session_id":voice.session_id,"participant_id":voice.assistant_participant_id,"voice_profile":"conference-voice/2"}));
     let call = match adapter
         .attach_agent_for_participant(
             &state.orchestrator,

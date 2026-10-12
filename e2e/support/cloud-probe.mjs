@@ -21,7 +21,7 @@ export async function ssm(commands) {
   throw new Error(`SSM ${id} still running; inspect before retrying`);
 }
 export async function vapiCalls(fixture) {
-  const res = await fetch(`https://api.vapi.ai/call?assistantId=${encodeURIComponent(process.env.VAPI_ASSISTANT_ID)}&limit=30`, {
+  const res = await fetch('https://api.vapi.ai/call?limit=50', {
     headers: {authorization: `Bearer ${process.env.VAPI_PRIVATE_KEY}`}, signal: AbortSignal.timeout(10000)});
   if (!res.ok) throw new Error(`Vapi status ${res.status}`);
   const matching = (await res.json()).filter(call => call.metadata?.conversation_id === fixture.cid && call.metadata?.session_id === fixture.sid);

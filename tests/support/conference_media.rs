@@ -89,7 +89,8 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
                 count.fetch_add(1, Ordering::SeqCst);
                 let ws_url = ws_url.clone();
                 async move {
-                    assert_eq!(body["assistantId"], "fixture-assistant");
+                    assert!(body.get("assistantId").is_none());
+                    assert_eq!(body["assistant"]["name"], "Parley conference David");
                     axum::Json(json!({"id":"fixture-call","transport":{"websocketCallUrl":ws_url}}))
                 }
             }),

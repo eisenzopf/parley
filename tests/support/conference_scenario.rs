@@ -262,23 +262,26 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
         let router=axum::Router::new().route("/call",axum::routing::post(move |axum::Json(body):axum::Json<Value>| {
             let n=created.fetch_add(1,Ordering::SeqCst);let audio_url=audio_url.clone();
             async move {
-                assert_eq!(body["assistantId"],"fixture-assistant");
-                assert!(body["assistantOverrides"]["firstMessage"].as_str().unwrap().contains("I'm David, Jonathan's AI assistant"));
-                assert!(body["assistantOverrides"]["model"]["messages"][0]["content"].as_str().unwrap().contains("You are David, Jonathan's AI"));
-                assert_eq!(body["assistantOverrides"]["silenceTimeoutSeconds"], if n == 0 { 30 } else { 180 }, "organizer must remain connected during coordinator/browser waiting");
-                assert_eq!(body["assistantOverrides"]["maxDurationSeconds"], 600);
-                let prompt = body["assistantOverrides"]["model"]["messages"][0]["content"].as_str().unwrap();
+                assert!(body.get("assistantId").is_none());
+                assert!(body.get("assistantOverrides").is_none());
+                assert!(body["assistant"].get("server").is_none());
+                assert_eq!(body["metadata"]["voice_profile"],"conference-voice/2");
+                assert!(body["assistant"]["firstMessage"].as_str().unwrap().contains("I'm David, Jonathan's AI assistant"));
+                assert!(body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap().contains("You are David, Jonathan's AI"));
+                assert_eq!(body["assistant"]["silenceTimeoutSeconds"], if n == 0 { 30 } else { 180 }, "organizer must remain connected during coordinator/browser waiting");
+                assert_eq!(body["assistant"]["maxDurationSeconds"], 600);
+                let prompt = body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap();
                 if n == 0 {
                     assert!(prompt.contains("When the reservationist says goodbye"));
-                    assert_eq!(body["assistantOverrides"]["model"]["tools"][0]["function"]["name"], "finish_call");
+                    assert_eq!(body["assistant"]["model"]["tools"][0]["function"]["name"], "finish_call");
                 } else {
                     assert!(prompt.contains("invoke request_browser_join exactly once"));
-                    assert_eq!(body["assistantOverrides"]["model"]["tools"][0]["function"]["name"],"request_browser_join");
-                    assert_eq!(body["assistantOverrides"]["model"]["tools"][0]["async"],true);
-                    assert!(body["assistantOverrides"]["model"]["tools"][0].get("server").is_none());
+                    assert_eq!(body["assistant"]["model"]["tools"][0]["function"]["name"],"request_browser_join");
+                    assert_eq!(body["assistant"]["model"]["tools"][0]["async"],true);
+                    assert!(body["assistant"]["model"]["tools"][0].get("server").is_none());
                     assert!(!prompt.contains("ask what the reservationist can offer"));
                 }
-                let finish = body["assistantOverrides"]["model"]["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "finish_call").unwrap();
+                let finish = body["assistant"]["model"]["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "finish_call").unwrap();
                 assert_eq!(finish["async"], true);
                 assert_eq!(finish["messages"], json!([]), "the coordinator queues exact announcement audio");
                 assert!(finish.get("server").is_none(), "only UCTP executes call termination");
