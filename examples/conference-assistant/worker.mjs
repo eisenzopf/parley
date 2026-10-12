@@ -533,6 +533,7 @@ export class ConferenceWorker {
 }
 
 export async function runWorkerLoop({ client, worker, stopped = () => false,
+  transportRetryLimit = 3,
   pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
   log = value => console.error(JSON.stringify(value)) }) {
   let planningFailures = 0, transportFailures = 0;
@@ -547,7 +548,7 @@ export async function runWorkerLoop({ client, worker, stopped = () => false,
       if (stopped()) return;
       const transport = connecting || (error instanceof UctpError && !error.code
         && /timed out|disconnected|not connected/.test(error.message));
-      const retry = transport ? ++transportFailures <= 3 : error.retryable && ++planningFailures <= 3;
+      const retry = transport ? ++transportFailures <= transportRetryLimit : error.retryable && ++planningFailures <= 3;
       log({ event: 'worker.error', message: error.message, code: error.code,
         transport_reason: error.transportReason, elapsed_ms: error.elapsedMs,
         operation: error.request?.type, request_id: error.request?.id,
@@ -579,7 +580,8 @@ async function main() {
     await client.connect();
     await worker.init();
     await writeFile(`${statePath}.ready.json`, JSON.stringify({ pid: process.pid, cid }), { mode: 0o600 });
-    await runWorkerLoop({ client, worker, stopped: () => stopped });
+    await runWorkerLoop({ client, worker, stopped: () => stopped,
+      transportRetryLimit: process.env.CONFERENCE_REQUIRE_OWNER_START === '1' ? 15 : 3 });
   } finally {
     client.close(); await lock.close();
     await unlink(`${statePath}.ready.json`).catch(() => {});

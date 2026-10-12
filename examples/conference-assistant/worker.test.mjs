@@ -11,6 +11,20 @@ const confirmedVoice = () => [
   { event_type: 'session.ended', payload: { sid: 'ses_confirm' } },
 ];
 
+test('managed workers can recover when a server restart exceeds the ordinary retry window', async () => {
+  let connections = 0, steps = 0;
+  const pauses = [], logs = [];
+  const client = { authenticated: false,
+    connect: async () => { if (++connections <= 4) throw new Error('UCTP connection failed'); client.authenticated = true; },
+    close: () => { client.authenticated = false; } };
+  const worker = { closed: false, step: async () => { steps++; worker.closed = true; } };
+  await runWorkerLoop({ client, worker, transportRetryLimit: 15,
+    pause: async ms => { pauses.push(ms); }, log: value => logs.push(value) });
+  assert.equal(connections, 5); assert.equal(steps, 1);
+  assert.deepEqual(pauses, [1000, 1000, 1000, 1000]);
+  assert.ok(logs.every(value => value.retry));
+});
+
 test('voice planning waits for stopped speech and a quiet interval across restart', async () => {
   let now = 0, plans = 0;
   const events = [
