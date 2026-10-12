@@ -1,5 +1,5 @@
 diff --git a/crates/extensions/rvoip-vapi/src/adapter.rs b/crates/extensions/rvoip-vapi/src/adapter.rs
-index 970b122..991c996 100644
+index 970b122..ce31095 100644
 --- a/crates/extensions/rvoip-vapi/src/adapter.rs
 +++ b/crates/extensions/rvoip-vapi/src/adapter.rs
 @@ -958,6 +958,59 @@ impl WriterFault {
@@ -162,7 +162,84 @@ index 970b122..991c996 100644
      }
      sink
  }
-@@ -1395,6 +1502,11 @@ async fn run_websocket_session(
+@@ -1091,7 +1198,8 @@ async fn run_websocket_session(
+     let mut outgoing_framer = AudioFramer::new(route.options.audio_format);
+     let mut incoming_frames = VecDeque::<Bytes>::new();
+     let mut outgoing_frames = VecDeque::<Bytes>::new();
+-    let mut timestamp_rtp = 0u32;
++    let mut timestamp_samples = 0u64;
++    let mut incoming_epoch: Option<tokio::time::Instant> = None;
+     let mut inbound_dropped: u64 = 0;
+     let mut inbound_drop_reported = false;
+     let mut outbound_dropped: u64 = 0;
+@@ -1127,9 +1235,8 @@ async fn run_websocket_session(
+             _ = &mut heartbeat_deadline, if awaiting_heartbeat_response => {
+                 break SessionOutcome::Failed("Vapi WebSocket heartbeat response timed out");
+             }
+-            // Deliberately unguarded: the RTP clock must advance with wall
+-            // time even when no audio is available. The agent is silent
+-            // whenever it is not speaking, which is most of a call.
++            // Keep polling during silence for health/closure detection. RTP
++            // uses elapsed wall time below rather than counting empty ticks.
+             _ = incoming_tick.tick() => {
+                 if route.stream.incoming_is_closed() {
+                     break SessionOutcome::Local(EndReason::BridgeTorn);
+@@ -1149,6 +1256,14 @@ async fn run_websocket_session(
+                 let release = 1 + over_target.min(config.max_catchup_frames_per_tick);
+                 let mut overflowed = false;
+                 let mut sent = 0usize;
++                if !incoming_frames.is_empty() && route.stream.incoming_has_capacity() {
++                    let epoch = incoming_epoch.get_or_insert_with(tokio::time::Instant::now);
++                    let elapsed_frames = epoch.elapsed().as_millis() as u64
++                        / route.options.audio_format.frame_ms() as u64;
++                    timestamp_samples = timestamp_samples.max(
++                        elapsed_frames * u64::from(route.options.audio_format.timestamp_increment())
++                    );
++                }
+                 for _ in 0..release {
+                     if !route.stream.incoming_has_capacity() {
+                         break;
+@@ -1156,7 +1271,7 @@ async fn run_websocket_session(
+                     let Some(frame) = incoming_frames.pop_front() else {
+                         break;
+                     };
+-                    if route.stream.try_push_incoming(frame, timestamp_rtp).is_err() {
++                    if route.stream.try_push_incoming(frame, timestamp_samples as u32).is_err() {
+                         metrics::counter!(
+                             "rvoip_vapi_queue_overflow_total", "direction" => "in"
+                         ).increment(1);
+@@ -1164,8 +1279,7 @@ async fn run_websocket_session(
+                         break;
+                     }
+                     sent += 1;
+-                    timestamp_rtp = timestamp_rtp
+-                        .wrapping_add(route.options.audio_format.timestamp_increment());
++                    timestamp_samples += u64::from(route.options.audio_format.timestamp_increment());
+                     metrics::counter!(
+                         "rvoip_vapi_audio_frames_total", "direction" => "in"
+                     ).increment(1);
+@@ -1192,16 +1306,11 @@ async fn run_websocket_session(
+                 route.health.set_jitter(jitter.jitter_ms(), target);
+                 route.health.add_inbound_frames(sent as u64);
+                 route.health.set_inbound_depth(incoming_frames.len());
+-                // Keep the RTP clock honest. One tick is one frame duration of
+-                // wall time whether or not audio was available; without this,
+-                // a silent stretch is invisible to the receiver and the next
+-                // utterance claims a sampling instant milliseconds after the
+-                // previous one instead of seconds. Sending N frames in a
+-                // catch-up tick advances by N: those frames really are N frame
+-                // durations of audio.
++                // Catch-up already reserves the sampling time occupied by its
++                // frames. Adding every subsequent empty tick double-counts
++                // that time and moves each utterance farther into the future.
++                // The next nonempty tick catches up to wall time if necessary.
+                 if sent == 0 {
+-                    timestamp_rtp = timestamp_rtp
+-                        .wrapping_add(route.options.audio_format.timestamp_increment());
+                     route.health.tick_underrun();
+                     metrics::counter!("rvoip_vapi_inbound_underrun_ticks_total").increment(1);
+                 }
+@@ -1395,6 +1504,11 @@ async fn run_websocket_session(
                              }
                              stale = stale.saturating_add(route.stream.request_flush());
                              if let Some(orchestrator) = orchestrator.and_then(Weak::upgrade) {
@@ -174,7 +251,7 @@ index 970b122..991c996 100644
                                  match orchestrator.flush_media_graph(&route.connection_id).await {
                                      Some(graph_stale) => {
                                          stale = stale.saturating_add(graph_stale);
-@@ -1405,6 +1517,11 @@ async fn run_websocket_session(
+@@ -1405,6 +1519,11 @@ async fn run_websocket_session(
                                          );
                                      }
                                  }
@@ -186,6 +263,73 @@ index 970b122..991c996 100644
                              }
                              if stale > 0 {
                                  let stale = stale as u64;
+diff --git a/crates/extensions/rvoip-vapi/tests/mock_transport.rs b/crates/extensions/rvoip-vapi/tests/mock_transport.rs
+index 7221089..92a8455 100644
+--- a/crates/extensions/rvoip-vapi/tests/mock_transport.rs
++++ b/crates/extensions/rvoip-vapi/tests/mock_transport.rs
+@@ -1362,6 +1362,62 @@ async fn pcm_audio_is_reframed_with_wideband_timestamps() {
+     server.abort();
+ }
+ 
++#[tokio::test]
++async fn repeated_utterance_bursts_do_not_push_rtp_seconds_ahead_of_wall_time() {
++    let (api_base, state, _observed, server) =
++        start_mock_with_behavior(Duration::ZERO, SocketBehavior::Interactive, Vec::new()).await;
++    let mut config = VapiConfig::new(VapiApiKey::new("mock-api-key").unwrap())
++        .with_api_base(api_base)
++        .with_loopback_test_transport();
++    config.heartbeat_interval = Duration::from_secs(60);
++    config.inbound_queue_capacity = 128;
++    config.jitter_target_floor_ms = 20;
++    config.jitter_target_ceiling_ms = 20;
++    config.max_catchup_frames_per_tick = 4;
++    let adapter = VapiAdapter::new(config).unwrap();
++    let request = OriginateRequest::new(
++        SessionId::new(),
++        ParticipantId::new(),
++        "vapi.websocket",
++        Direction::Outbound,
++        VapiAudioFormat::MuLaw8Khz.capabilities(),
++    )
++    .with_transport(Transport::Vapi)
++    .with_context(VapiCallOptions::new(VapiAssistant::saved("assistant-mock")));
++    let id = adapter.originate(request).await.unwrap().connection.id;
++    adapter
++        .activate_outbound_with_receipt(id.clone())
++        .await
++        .unwrap();
++    let stream = adapter.streams(id.clone()).await.unwrap().pop().unwrap();
++    let mut incoming = stream.try_frames_in().unwrap();
++    let mut first = None;
++    for _ in 0..5 {
++        // A provider utterance arrives coalesced, drains quickly, then the
++        // caller speaks. The next utterance must use the same real-time clock.
++        state
++            .injected
++            .send(Injected::Binary(vec![0x44; 20 * 160]))
++            .unwrap();
++        for index in 0..20 {
++            let frame = tokio::time::timeout(Duration::from_secs(2), incoming.recv())
++                .await
++                .unwrap()
++                .unwrap();
++            let (start, epoch) = *first.get_or_insert((Instant::now(), frame.timestamp_rtp));
++            if index == 0 {
++                let audio_ms = frame.timestamp_rtp.wrapping_sub(epoch) as u64 / 8;
++                let wall_ms = start.elapsed().as_millis() as u64;
++                assert!(audio_ms <= wall_ms + 120,
++                    "next utterance is {audio_ms} ms on RTP but only {wall_ms} ms elapsed; catch-up plus silence double-counted time");
++            }
++        }
++        tokio::time::sleep(Duration::from_millis(450)).await;
++    }
++    adapter.end(id, EndReason::Normal).await.unwrap();
++    server.abort();
++}
++
+ #[tokio::test]
+ async fn normal_websocket_close_is_a_normal_remote_end() {
+     let (api_base, _state, _observed, server) =
 diff --git a/crates/media/rtp-core/src/session/mod.rs b/crates/media/rtp-core/src/session/mod.rs
 index be27ef8..f23606f 100644
 --- a/crates/media/rtp-core/src/session/mod.rs
@@ -529,7 +673,7 @@ index 786763b..ee40279 100644
          // Apply RFC 4568 SDES-SRTP policy from Config (Step 2B.1).
          media_adapter_inner.set_srtp_policy(
 diff --git a/crates/sip/rvoip-sip/src/media_stream.rs b/crates/sip/rvoip-sip/src/media_stream.rs
-index 43e99c8..dac5cb1 100644
+index 43e99c8..dc816c3 100644
 --- a/crates/sip/rvoip-sip/src/media_stream.rs
 +++ b/crates/sip/rvoip-sip/src/media_stream.rs
 @@ -387,28 +387,57 @@ const FRAME_CHANNEL_CAP: usize = 64;
@@ -591,8 +735,34 @@ index 43e99c8..dac5cb1 100644
      ts
  }
  
-@@ -1442,8 +1471,11 @@ async fn run_outbound_pump(
+@@ -1345,6 +1374,7 @@ async fn run_outbound_pump(
+         };
+     let mut channels = runtime.negotiated.channels.max(1);
+     let mut outbound_clock = OutboundRtpClock::default();
++    let mut next_audio_send = tokio::time::Instant::now();
+     let mut telephone_events = TelephoneEventTracker::default();
+     loop {
+         let (media_frame, mut delivery_guard) = tokio::select! {
+@@ -1440,10 +1470,29 @@ async fn run_outbound_pump(
+             }
+         };
          let samples_emitted = audio_frame.samples.len() / usize::from(channels.max(1));
++        // WebSocket speech may arrive in large bursts. A telephone RTP sender
++        // must still emit audio at the negotiated sample rate: passing those
++        // bursts straight through makes the receiver drain its jitter buffer
++        // early, leaving subsequent browser audio behind its playout clock.
++        tokio::time::sleep_until(next_audio_send).await;
++        let now = tokio::time::Instant::now();
++        let frame_duration = std::time::Duration::from_secs_f64(
++            samples_emitted as f64 / audio_frame.sample_rate.max(1) as f64,
++        );
++        // Preserve the cadence through ordinary scheduling jitter, but never
++        // catch up by emitting a burst after an idle interval or a long stall.
++        next_audio_send = if now.saturating_duration_since(next_audio_send) >= frame_duration {
++            now + frame_duration
++        } else {
++            next_audio_send + frame_duration
++        };
          audio_frame.timestamp = advance_outbound_timestamp(
              &mut outbound_clock,
 +            media_frame.stream_id.as_str(),
@@ -603,7 +773,7 @@ index 43e99c8..dac5cb1 100644
          );
          if coordinator
              .send_audio(&session_id, audio_frame)
-@@ -2207,6 +2239,17 @@ mod rfc4733_tests {
+@@ -2207,6 +2256,17 @@ mod rfc4733_tests {
  mod outbound_timestamp_tests {
      use super::{advance_outbound_timestamp, OutboundRtpClock};
  
@@ -621,7 +791,7 @@ index 43e99c8..dac5cb1 100644
      /// A full 20 ms G.711 frame at 8 kHz mono.
      const G711_FRAME_SAMPLES: usize = 160;
  
-@@ -2218,7 +2261,7 @@ mod outbound_timestamp_tests {
+@@ -2218,7 +2278,7 @@ mod outbound_timestamp_tests {
          let upstream = [1_000_000u32, 1_000_160, 1_000_320, 1_000_480];
          let out: Vec<u32> = upstream
              .iter()
@@ -630,7 +800,7 @@ index 43e99c8..dac5cb1 100644
              .collect();
          assert_eq!(out, vec![0, 160, 320, 480]);
      }
-@@ -2226,23 +2269,83 @@ mod outbound_timestamp_tests {
+@@ -2226,23 +2286,83 @@ mod outbound_timestamp_tests {
      #[test]
      fn preserves_a_suppressed_dtx_interval() {
          let mut clock = OutboundRtpClock::default();

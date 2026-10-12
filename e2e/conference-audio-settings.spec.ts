@@ -26,7 +26,7 @@ test('audio settings select the monitor mic and speaker, show sound, and stop th
     (window as any).RTCPeerConnection = class { constructor() { probe.calls++; throw new Error('Mic check must not open a call'); } };
   });
   await page.goto('/conference/?manual=1');
-  await page.locator('#audio-settings summary').click();
+  await expect(page.getByLabel('Microphone', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => (window as any).audioProbe.inputs.length)).toBe(0);
   await page.getByLabel('Microphone', { exact: true }).selectOption('display-mic');
   await page.getByRole('button', { name: 'Check microphone', exact: true }).click();
@@ -42,7 +42,7 @@ test('audio settings select the monitor mic and speaker, show sound, and stop th
   await expect(page.locator('#audio-status')).toContainText('Playing a short tone');
   expect(await page.evaluate(() => (window as any).audioProbe.outputs)).toContain('display-speaker');
   expect(await page.evaluate(() => (window as any).audioProbe.calls)).toBe(0);
-  await page.reload(); await page.locator('#audio-settings summary').click();
+  await page.reload();
   await expect(page.getByLabel('Microphone', { exact: true })).toHaveValue('display-mic');
   await expect(page.getByLabel('Speaker', { exact: true })).toHaveValue('display-speaker');
   expect(await page.evaluate(() => (window as any).audioProbe.inputs.length)).toBe(0);

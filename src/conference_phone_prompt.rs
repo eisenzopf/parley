@@ -18,7 +18,26 @@ pub(crate) struct PhonePrompt {
     audio: Vec<u8>,
     payload_type: u8,
     position: usize,
-    timestamp: u32,
+    clock: PromptClock,
+}
+
+#[derive(Default)]
+struct PromptClock {
+    started_at: Option<Instant>,
+    next_samples: u64,
+}
+
+impl PromptClock {
+    fn next(&mut self, now: Instant) -> u32 {
+        let started = *self.started_at.get_or_insert(now);
+        // The callback scheduler skips missed ticks. Those intervals must
+        // remain visible to the receiver instead of making every later
+        // prompt frame permanently late after a scheduling stall.
+        let elapsed_samples = now.duration_since(started).as_millis() as u64 / 20 * 160;
+        let samples = self.next_samples.max(elapsed_samples);
+        self.next_samples = samples + 160;
+        samples as u32
+    }
 }
 
 fn encoded_prompt(codec: &CodecInfo) -> Result<(Vec<u8>, u8, u8), &'static str> {
@@ -64,7 +83,7 @@ impl PhonePrompt {
             audio,
             payload_type,
             position: 0,
-            timestamp: 0,
+            clock: PromptClock::default(),
         })
     }
 
@@ -82,7 +101,7 @@ impl PhonePrompt {
             stream_id: self.stream.id(),
             kind: StreamKind::Audio,
             payload,
-            timestamp_rtp: self.timestamp,
+            timestamp_rtp: self.clock.next(Instant::now()),
             captured_at: chrono::Utc::now(),
             payload_type: Some(self.payload_type),
         };
@@ -95,7 +114,6 @@ impl PhonePrompt {
         .map_err(|_| "callback prompt send timed out")?
         .map_err(|_| "callback prompt stream ended")?;
         self.position = (self.position + 160) % self.audio.len();
-        self.timestamp = self.timestamp.wrapping_add(160);
         Ok(())
     }
 
@@ -122,6 +140,44 @@ impl Drop for PhonePrompt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_prompt_recovers_after_skipped_scheduler_ticks() {
+        use rvoip_media_core::processing::audio::playout::{PlayoutBuffer, PlayoutConfig};
+        use rvoip_media_core::types::AudioFrame;
+        use std::time::Duration;
+        let began = Instant::now();
+        let mut clock = PromptClock::default();
+        let mut phone = PlayoutBuffer::new(PlayoutConfig {
+            adaptive: false,
+            ..Default::default()
+        });
+        for ms in [0, 20, 500, 520] {
+            let now = began + Duration::from_millis(ms);
+            while phone
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= now.into_std())
+            {
+                phone.pop_due(now.into_std());
+            }
+            phone.push(
+                AudioFrame::new(vec![7000; 160], 8000, 1, clock.next(now)),
+                now.into_std(),
+            );
+        }
+        assert_eq!(
+            phone
+                .pop_due((began + Duration::from_millis(540)).into_std())
+                .unwrap()
+                .samples[0],
+            7000
+        );
+        assert_eq!(
+            phone.stats().frames_late,
+            0,
+            "prompt must resume audibly after a scheduler pause"
+        );
+    }
 
     #[test]
     fn prompt_supports_only_negotiated_g711_and_has_a_continuous_quiet_tail() {

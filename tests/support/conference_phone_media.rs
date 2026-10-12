@@ -54,6 +54,15 @@ pub async fn endpoint() -> PhoneEndpoint {
             let mut tick = tokio::time::interval(Duration::from_millis(20));
             let mut position = 0;
             let mut confirmed = false;
+            let mut heard_prompt = false;
+            let mut first_received = None;
+            let mut received_remote = 0;
+            let mut playout = rvoip_media_core::processing::audio::playout::PlayoutBuffer::new(
+                rvoip_sip::PlayoutConfig {
+                    adaptive: false,
+                    ..Default::default()
+                },
+            );
             let end = call.wait_for_end(None);
             tokio::pin!(end);
             let mut end_observed = false;
@@ -61,13 +70,30 @@ pub async fn endpoint() -> PhoneEndpoint {
                 tokio::select! {
                 result=&mut end=>{result.unwrap();end_observed=true;break},
                     digit=received_digits.recv()=>if let Some(digit)=digit {call.send_dtmf(digit).await.unwrap();if digit=='1'{confirmed=true;}},
-                    _=tick.tick()=>{if send.send(EndpointAudioFrame::new(tone(1040.0,8000,position),8000,1,position)).await.is_err(){break}position+=160;},
-                    frame=recv.recv()=>if let Some(frame)=frame {
+                    _=tick.tick()=>{
+                      // A person waiting to hear the prompt need not speak
+                      // first. Count only audio the phone can actually play.
+                      while let Some(frame) = playout.pop_due(std::time::Instant::now()) {
                         if !confirmed {
-                            f.fetch_add(1, Ordering::SeqCst);
-                            if frame.samples.iter().any(|s|s.unsigned_abs()>500) {p.fetch_add(1, Ordering::SeqCst);}
+                            if frame.samples.iter().any(|s|s.unsigned_abs()>500) {p.fetch_add(1, Ordering::SeqCst);heard_prompt=true;}
                         }
                         if frame.samples.iter().any(|s|s.unsigned_abs()>500) && (frequency(&frame.samples,frame.sample_rate)-660.0).abs()<80.0 {r.fetch_add(1,Ordering::SeqCst);}
+                      }
+                      if heard_prompt {
+                        if send.send(EndpointAudioFrame::new(tone(1040.0,8000,position),8000,1,position)).await.is_err(){break}
+                        position+=160;
+                      }
+                    },
+                    frame=recv.recv()=>if let Some(frame)=frame {
+                        if !confirmed { f.fetch_add(1, Ordering::SeqCst); }
+                        let (at, ts) = *first_received.get_or_insert((std::time::Instant::now(),frame.timestamp));
+                        if confirmed && (frequency(&frame.samples,frame.sample_rate)-660.0).abs()<80.0 {
+                            received_remote += 1;
+                            if received_remote==1 || received_remote==75 {
+                                println!("Phone remote frame {received_remote}: elapsed_ms={} timestamp_ms={} playout={:?}",at.elapsed().as_millis(),frame.timestamp.wrapping_sub(ts) as u64/8,playout.stats());
+                            }
+                        }
+                        playout.push(frame.into(), std::time::Instant::now());
                     } else {break},
                 }
             }

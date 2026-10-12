@@ -3,6 +3,38 @@
 Current voice-only rehearsal: [steps and operator setup](CONFERENCE_VOICE_REHEARSAL.md).
 Voice-only evidence below remains historical. The approved SMS flow uses reviewed public-form enrollments.
 
+## Audio regression investigation — October 12, 2026
+
+The previous continuously paced tone test did not reproduce repeated bursts of
+assistant speech before browser takeover. A new ten-burst, eight-second-pause
+Chrome/SIP test reproduced one-way audio: the browser heard the telephone, but
+the telephone playout buffer discarded the browser frames. Correcting the Vapi
+clock alone did not resolve that integration failure. Pacing the SIP sender at
+the negotiated sample rate made the same test pass, retaining the original SIP
+connection and retiring the assistant. The Vapi regression independently caught
+double-counted time after burst drain (840 ms of RTP time after 519 ms elapsed);
+all 21 mock transport tests pass with the elapsed-time clock correction.
+
+The callback prompt now also includes skipped scheduler intervals in its RTP
+clock. Its deterministic 480 ms pause regression verifies resumed audible
+playout instead of late-frame discard. The complete local scenario passes with
+a silent callback recipient until the prompt is heard, a 23-second confirmation
+wait, actual timed phone playout, cancellation/retry, and continuing two-way
+audio after pressing 1. Nineteen ordinary conference integration tests, 94
+JavaScript tests and the device-picker browser test pass. A standalone SIP unit
+build was cancelled while it blocked the integration investigation; it is not
+counted as a passing check.
+
+These are synthetic reproductions, not proof of the precise first live
+regression or of audibility on the carrier handset. The reported silent callback
+also remains distinct from the latest carrier records: all three recorded owner
+callback attempts on the current conversation returned SIP 603 without an answer.
+That discrepancy does not establish what the user heard or who rejected the calls.
+
+Microphone and speaker selectors now open visibly by default. The browser test
+checks device selection, microphone activity, speaker testing, saved choices,
+and release of the microphone without starting a call.
+
 ## Approved SMS integration — October 10, 2026
 
 Telnyx reports the real campaign as `MNO_PROVISIONED`. The sender assignment was

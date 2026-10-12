@@ -37,11 +37,16 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     let received = vapi_received.clone();
     let assistant_tone_enabled = Arc::new(AtomicBool::new(true));
     let assistant_tone = assistant_tone_enabled.clone();
+    let burst_mode = Arc::new(AtomicBool::new(false));
+    let provider_bursts = burst_mode.clone();
+    let bursts_sent = Arc::new(AtomicUsize::new(0));
+    let provider_bursts_sent = bursts_sent.clone();
     let provider = tokio::spawn(async move {
         let (tcp, _) = ws_listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         let mut position = 0;
+        let mut burst_tick = 0usize;
         loop {
             tokio::select! {
                 _ = tick.tick() => {
@@ -49,6 +54,21 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
                     // while the owner answers the browser. No RTP payloads
                     // are emitted during that pause.
                     if !assistant_tone.load(Ordering::SeqCst) { continue; }
+                    if provider_bursts.load(Ordering::SeqCst) {
+                        // Coalesced utterances followed by caller pauses expose
+                        // timestamp drift hidden by continuously paced tones.
+                        burst_tick += 1;
+                        if burst_tick % 30 == 1 && provider_bursts_sent.load(Ordering::SeqCst) < 10 {
+                            let mut pcm = Vec::new();
+                            for _ in 0..20 {
+                                pcm.extend(tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes));
+                                position += 320;
+                            }
+                            if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
+                            provider_bursts_sent.fetch_add(1, Ordering::SeqCst);
+                        }
+                        continue;
+                    }
                     let pcm: Vec<u8> = tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes).collect();
                     position += 320;
                     if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
@@ -145,6 +165,8 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
             },
         );
         let mut requested_hangup = false;
+        let mut first_received = None;
+        let mut first_human_received = false;
         let end = call.wait_for_end(None);
         tokio::pin!(end);
         loop {
@@ -165,6 +187,11 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
                     }
                 },
                 frame=recv.recv()=>if let Some(frame)=frame {
+                    let (first_at, first_ts) = *first_received.get_or_insert((std::time::Instant::now(), frame.timestamp));
+                    if !first_human_received && (frequency(&frame.samples,frame.sample_rate)-880.0).abs()<80.0 {
+                        first_human_received = true;
+                        println!("First browser RTP: elapsed_ms={} timestamp_ms={} playout={:?}", first_at.elapsed().as_millis(), frame.timestamp.wrapping_sub(first_ts) as u64 / 8, playout.stats());
+                    }
                     playout.push(frame.into(), std::time::Instant::now());
                 } else {break;}
             }
@@ -303,8 +330,12 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
             "ai_frames":observed_ai.load(Ordering::SeqCst),
             "human_frames":observed_human.load(Ordering::SeqCst),
             "provider_frames":observed_provider.load(Ordering::SeqCst),
+            "bursts_sent":bursts_sent.load(Ordering::SeqCst),
         });
         async move {axum::Json(result)}
+    })).route("/__burst_assistant", axum::routing::post(move || {
+        burst_mode.store(true, Ordering::SeqCst);
+        async { axum::http::StatusCode::NO_CONTENT }
     })).route("/__pause_assistant", axum::routing::post(move || {
         assistant_tone_enabled.store(false, Ordering::SeqCst);
         async { axum::http::StatusCode::NO_CONTENT }

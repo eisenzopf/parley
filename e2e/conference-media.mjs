@@ -45,6 +45,15 @@ try {
     if (!recovered.original_bridge || recovered.ai_frames<=before.ai_frames+5 || recovered.provider_frames<=before.provider_frames+5) {
       throw new Error(`Failed handoff interrupted the original bidirectional audio: ${JSON.stringify({before,recovered})}`);
     }
+    const bursts = await fetch('/__burst_assistant', { method: 'POST' });
+    if (bursts.status !== 204) throw new Error('Could not start assistant utterance bursts');
+    const burstDeadline = Date.now() + 10000;
+    while ((await (await fetch('/__media_fixture')).json()).bursts_sent < 10) {
+      if (Date.now() > burstDeadline) throw new Error('Assistant utterance bursts did not complete');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    // Drain the final burst before the answer pause.
+    await new Promise(resolve => setTimeout(resolve, 500));
     // The real flow has silence while Jonathan answers. A telephone's playout
     // clock continues through that pause, even with no assistant RTP packets.
     const pause = await fetch('/__pause_assistant', { method: 'POST' });
