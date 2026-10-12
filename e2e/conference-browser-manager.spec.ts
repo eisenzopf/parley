@@ -26,6 +26,19 @@ test('browser remembers access and can create fresh conversations without token 
     const response = await route.fetch({ url: endpoint + incoming.pathname + incoming.search });
     await route.fulfill({ response });
   });
+  await page.addInitScript(() => {
+    const NativeSocket = window.WebSocket;
+    window.WebSocket = class extends NativeSocket {
+      addEventListener(type: any, listener: any, options?: any) {
+        if (type !== 'message') return super.addEventListener(type, listener, options);
+        return super.addEventListener(type, (event: any) => {
+          let auth = false; try { auth = JSON.parse(event.data).type.startsWith('auth.'); } catch {}
+          if (auth) setTimeout(() => listener.call(this, event), 900);
+          else listener.call(this, event);
+        }, options);
+      }
+    } as any;
+  });
   try {
     const grant = (await (await request.post(`${endpoint}/v1/conference/browser/grants`, { headers: { authorization: 'Bearer dev-only' } })).json()).grant;
     await page.goto(`/conference/#access=${grant}`);
@@ -34,6 +47,7 @@ test('browser remembers access and can create fresh conversations without token 
     await expect(page.locator('#setup')).toBeHidden(); await expect(page.locator('#token')).toHaveValue('');
     await page.getByRole('button', { name: 'New conversation', exact: true }).click();
     await expect(page.locator('#status')).toContainText('SMS fixture');
+    await expect(page.locator('#notice')).toHaveText('');
     await expect(page.getByRole('button', { name: 'Start coordinating', exact: true })).toBeEnabled();
     const first = new URL(page.url()).searchParams.get('cid')!;
     expect(first).toMatch(/^conv_/); expect(manager.worker?.ready).toBe(true);
@@ -42,6 +56,9 @@ test('browser remembers access and can create fresh conversations without token 
     await page.reload(); await expect(page.locator('#status')).toContainText('Connected');
     await expect(page.locator('#setup')).toBeHidden();
     expect(new URL(page.url()).searchParams.get('cid')).toBe(first);
+    await page.goto(`/conference/#access=${grant}`);
+    await expect(page.locator('#status')).toContainText('Connected');
+    await expect(page.locator('#notice')).toHaveText('');
     await page.getByRole('button', { name: 'New conversation', exact: true }).click();
     await expect.poll(() => new URL(page.url()).searchParams.get('cid')).not.toBe(first);
     const second = new URL(page.url()).searchParams.get('cid')!;
@@ -62,6 +79,7 @@ test('browser remembers access and can create fresh conversations without token 
     await page.screenshot({ path: 'test-results/conference-managed-history.png', fullPage: true });
     await page.locator('#conversation-list').selectOption(second);
     await expect(page.locator('#status')).toContainText('Connected');
+    await expect(page.locator('#notice')).toHaveText('');
     await page.screenshot({ path: 'test-results/conference-managed-current.png', fullPage: true });
   } finally {
     await manager.stopWorker();

@@ -8,7 +8,7 @@ const $ = id => document.getElementById(id);
 let client, audio, cid, me, assistant, projection, capabilities, selectedRoute, selectedSeq, cursor = 0, activeSession = null, interruptedSession = null, proposal = null, polling = false, voiceOnly = false;
 const members = new Map(); const events = []; const traces = new Map(); const channels = new Map();
 const ringtone = new BrowserRingtone();
-let joining = false, browserAccess = false, creatingConversation = false, workerReady = true, lastSnapshot = null;
+let joining = false, browserAccess = false, creatingConversation = false, workerReady = true, lastSnapshot = null, connectingConversation = false;
 const defaultTask = $('task').value;
 
 const error = value => { $('notice').textContent = value?.message || String(value); };
@@ -28,6 +28,7 @@ function trace(direction, frame) {
 }
 
 async function connectConversation(access) {
+  connectingConversation = true; $('conversation-list').disabled = true;
   $('notice').textContent = ''; ringtone.stop(); joining = false;
   try {
     client?.close(); audio?.closeLocal(); activeSession = null; interruptedSession = null; $('recovery').classList.add('hidden'); $('join').disabled = true; $('end').disabled = true; cid = access.cid; cursor = 0; events.length = 0; traces.clear(); channels.clear();
@@ -51,6 +52,7 @@ async function connectConversation(access) {
     consume(first); renderPeople();
     if (!polling) { polling = true; poll(); }
   } catch (e) { client?.close(); error(e); throw e; }
+  finally { connectingConversation = false; updateNewConversationButton(); }
 }
 $('setup').addEventListener('submit', async event => {
   event.preventDefault(); await ringtone.unlock();
@@ -58,6 +60,7 @@ $('setup').addEventListener('submit', async event => {
 });
 
 async function poll() {
+  if (connectingConversation) { setTimeout(poll, 750); return; }
   const activeClient = client, activeCid = cid;
   try {
     if (activeClient && !activeClient.authenticated) {
@@ -73,6 +76,7 @@ async function poll() {
     }
   } catch (e) {
     if (activeClient === client && activeCid === cid) {
+      if (browserAccess && [401, 403].includes(e.code)) activeClient.close();
       ringtone.stop(); $('join').disabled = true;
       $('browser-invitation').classList.add('hidden');
       $('status').textContent = 'Connection interrupted · recovering'; renderStage(false); error(e);
@@ -311,12 +315,13 @@ async function accessRequest(path, options = {}) {
   const response = await fetch(`/v1/conference/browser/${path}`, { credentials: 'same-origin',
     ...options, headers: { 'content-type': 'application/json', ...options.headers }, signal: AbortSignal.timeout(25000) });
   let value; try { value = await response.json(); } catch { throw new Error('The conversation service is unavailable. Please retry.'); }
-  if (!response.ok) throw new Error(value.error || 'Could not manage this conversation.');
+  if (!response.ok) throw Object.assign(new Error(value.error || 'Could not manage this conversation.'), { status: response.status });
   return value;
 }
 function updateNewConversationButton() {
   const live = projection && [...projection.sessions.values()].some(s => !['ended', 'failed'].includes(s.state));
-  $('new-conversation').disabled = !browserAccess || creatingConversation || !!live;
+  $('new-conversation').disabled = !browserAccess || creatingConversation || connectingConversation || !!live;
+  $('conversation-list').disabled = creatingConversation || connectingConversation || !!live;
   $('new-conversation').title = live ? 'End the current voice call before starting a new conversation.' : '';
 }
 async function showManagedConversation(session, resetTask = false) {
@@ -364,21 +369,25 @@ $('conversation-list').onchange = async () => {
 async function enableBrowser() {
   if (params.get('manual') === '1') { $('setup').classList.remove('hidden'); $('browser-access').classList.add('hidden'); return; }
   const grant = new URLSearchParams(location.hash.slice(1)).get('access');
-  if (grant) {
-    history.replaceState(null, '', location.pathname + location.search);
-    try { await accessRequest('session', { method: 'POST', body: JSON.stringify({ grant }) }); }
-    catch (e) { $('access-status').textContent = e.message; return; }
-  }
+  if (grant) history.replaceState(null, '', location.pathname + location.search);
+  const path = params.get('cid') ? `session?cid=${encodeURIComponent(params.get('cid'))}` : 'session';
   try {
-    const session = await accessRequest(params.get('cid') ? `session?cid=${encodeURIComponent(params.get('cid'))}` : 'session');
+    let session;
+    try { session = await accessRequest(path); }
+    catch (e) {
+      if (!grant || e.status !== 401) throw e;
+      await accessRequest('session', { method: 'POST', body: JSON.stringify({ grant }) });
+      session = await accessRequest(path);
+    }
     if (session.pending_request_id) sessionStorage.setItem('parley.pending-new-conversation', session.pending_request_id);
     await showManagedConversation(session);
   } catch (e) { $('access-status').textContent = e.message; }
 }
+
 enableBrowser();
 
 setInterval(async () => {
-  if (!browserAccess || !client || creatingConversation) return;
+  if (!browserAccess || !client || creatingConversation || connectingConversation) return;
   const activeClient = client, activeCid = cid;
   try {
     const session = await accessRequest(`session?cid=${encodeURIComponent(activeCid)}`);
