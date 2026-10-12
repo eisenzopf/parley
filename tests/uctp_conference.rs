@@ -1,11 +1,56 @@
 #![cfg(feature = "uctp")]
-use parley::store::conference::{InboundSmsOutcome, Member};
+use parley::store::conference::{InboundSmsOutcome, Member, MemberInput};
 use parley::{store::Store, App, Config};
 use rvoip_uctp::{envelope::UctpEnvelope, types::MessageType};
 use rvoip_websocket::UctpWsClient;
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
+
+#[test]
+fn caller_pool_rotates_and_survives_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    cfg.sqlite_path = dir.path().join("caller-pool.sqlite").display().to_string();
+    cfg.blob_dir = dir.path().join("blobs").display().to_string();
+    let pool = vec![
+        "+15555550101".to_string(),
+        "+15555550102".to_string(),
+        "+15555550103".to_string(),
+    ];
+    let store = Store::open(&cfg).unwrap();
+    store
+        .create_conference(
+            "ten_local",
+            "conv_caller_pool",
+            &[MemberInput {
+                alias: "owner".into(),
+                name: "Owner".into(),
+                role: "owner".into(),
+                sms: None,
+                sip: None,
+            }],
+            "create_caller_pool",
+        )
+        .unwrap();
+    let first = store
+        .next_conference_caller("ten_local", "conv_caller_pool", &pool)
+        .unwrap()
+        .unwrap();
+    let reopened = Store::open(&cfg).unwrap();
+    let mut actual = vec![first.clone()];
+    for _ in 0..3 {
+        actual.push(
+            reopened
+                .next_conference_caller("ten_local", "conv_caller_pool", &pool)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let start = pool.iter().position(|n| n == &first).unwrap();
+    assert_eq!(actual, (0..4).map(|i| pool[(start + i) % pool.len()].clone()).collect::<Vec<_>>());
+    assert!(reopened.next_conference_caller("ten_local", "conv_caller_pool", &[pool[0].clone(), pool[0].clone()]).is_err());
+}
 
 #[cfg(all(feature = "sip", feature = "vapi", feature = "media-webrtc"))]
 #[path = "support/conference_media.rs"]

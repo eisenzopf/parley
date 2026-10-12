@@ -78,6 +78,26 @@ async fn sip_busy_no_answer_cancel_and_late_answer_leave_no_active_call() {
                 observed.methods.lock().unwrap().push(method.to_owned());
                 match method {
                     "INVITE" => {
+                        if outcome == Outcome::Busy {
+                            let from = header(packet, "From");
+                            assert!(
+                                [
+                                    "sip:%2B15555550101@sip.telnyx.com",
+                                    "sip:%2B15555550102@sip.telnyx.com"
+                                ]
+                                .iter()
+                                .any(|number| from.contains(number)),
+                                "pool caller identity missing: {from}"
+                            );
+                            assert!(!packet.lines().any(|line| line
+                                .to_ascii_lowercase()
+                                .starts_with("p-asserted-identity:")));
+                        } else {
+                            assert!(header(packet, "From")
+                                .contains("sip:%2B15555550123@example.invalid"));
+                            assert!(header(packet, "P-Asserted-Identity")
+                                .contains("sip:%2B15555550123@example.invalid"));
+                        }
                         observed.invites.fetch_add(1, Ordering::SeqCst);
                         observed
                             .calls
@@ -131,6 +151,13 @@ async fn sip_busy_no_answer_cancel_and_late_answer_leave_no_active_call() {
         cfg.conference_sip_bind = Some(reserved.local_addr().unwrap().to_string());
         drop(reserved);
         cfg.conference_network.sip_media_ports = [47000, 47200];
+        cfg.conference_sip_from = "sip:auth-user@example.invalid".into();
+        cfg.conference_network.sip_asserted_identity =
+            Some("sip:+15555550123@example.invalid".into());
+        if outcome == Outcome::Busy {
+            cfg.conference_sip_caller_pool =
+                vec!["+15555550101".into(), "+15555550102".into()];
+        }
         let app = App::new(cfg.clone(), Store::open(&cfg).unwrap()).unwrap();
         parley::conference_voice::bind(&app.state).await.unwrap();
         let url = url::Url::parse(&format!("ws://{}", app.start_uctp().await.unwrap())).unwrap();

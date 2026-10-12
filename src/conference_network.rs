@@ -209,6 +209,29 @@ impl ConferenceNetwork {
         Ok(())
     }
 
+    /// The SIP adapter requires caller identity on each originate request;
+    /// its local_uri alone does not populate the outbound From header.
+    pub fn sip_request(
+        &self,
+        request: rvoip_core::OriginateRequest,
+        identity: &str,
+    ) -> Result<rvoip_core::OriginateRequest> {
+        #[cfg(feature = "sip")]
+        {
+            let context = rvoip_sip::SipOriginateContext::new()
+                .with_from_uri(identity)
+                .map_err(|_| ApiError::bad_request("invalid conference SIP caller identity"))?;
+            Ok(request.with_context(context))
+        }
+        #[cfg(not(feature = "sip"))]
+        {
+            let _ = (request, identity);
+            Err(ApiError::bad_request(
+                "conference SIP requires the sip feature",
+            ))
+        }
+    }
+
     #[cfg(feature = "sip")]
     pub fn sip_config(&self, bind: SocketAddr, from: &str) -> Result<rvoip_sip::Config> {
         self.validate()?;
@@ -261,6 +284,26 @@ impl ConferenceNetwork {
             .collect();
         Ok(config)
     }
+}
+
+pub fn caller_identity(
+    state: &crate::runtime::AppState,
+    tenant: &str,
+    cid: &str,
+) -> Result<String> {
+    if let Some(number) = state.store.next_conference_caller(
+        tenant,
+        cid,
+        &state.config.conference_sip_caller_pool,
+    )? {
+        return Ok(format!("sip:{number}@sip.telnyx.com"));
+    }
+    Ok(state
+        .config
+        .conference_network
+        .sip_asserted_identity
+        .clone()
+        .unwrap_or_else(|| state.config.conference_sip_from.clone()))
 }
 
 fn parse_ports(value: &str) -> Result<[u16; 2]> {

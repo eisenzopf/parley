@@ -28,6 +28,8 @@ restricted to Telnyx US signaling addresses; RTP UDP 44000–44200 is restricted
 Telnyx's published media ranges. WebRTC DTLS media uses UDP 46000–46100. Refresh
 Telnyx addresses from `https://sip.telnyx.com/voice.json` before future deployments.
 
+For David's outbound voice calls, set `CONFERENCE_SIP_CALLER_POOL` to a comma-separated list of owned, active E.164 Telnyx numbers on the conference SIP connection. Each conversation starts at a random number and advances one number per outbound phone call; its pool and cursor survive restarts. The SMS sender remains `TELNYX_FROM_NUMBER` and is unaffected.
+
 ## Browser sign-in and new conversations
 
 The hosted `parley-browser.service` accepts password sign-in at

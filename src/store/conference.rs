@@ -165,6 +165,68 @@ pub fn validate_members(inputs: &[MemberInput]) -> Result<()> {
 }
 
 impl Store {
+    /// Allocate David's next caller ID atomically. The first index is random
+    /// per conversation; subsequent calls advance through its saved pool.
+    pub fn next_conference_caller(
+        &self,
+        tenant: &str,
+        cid: &str,
+        pool: &[String],
+    ) -> Result<Option<String>> {
+        if pool.is_empty() {
+            return Ok(None);
+        }
+        if pool.len() > 32
+            || pool.iter().any(|n| {
+                !n.starts_with('+')
+                    || !(9..=16).contains(&n.len())
+                    || !n[1..].bytes().all(|b| b.is_ascii_digit())
+            })
+            || pool.iter().collect::<std::collections::HashSet<_>>().len() != pool.len()
+        {
+            return Err(ApiError::bad_request("caller pool requires unique E.164 numbers"));
+        }
+        let mut conn = self.conn.lock().expect("store lock");
+        let tx = conn.transaction()?;
+        let saved: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT numbers_json,next_index FROM conference_caller_rotation WHERE tenant_id=?1 AND conversation_id=?2",
+                params![tenant, cid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let (numbers, index) = if let Some((serialized, index)) = saved {
+            (
+                serde_json::from_str::<Vec<String>>(&serialized)
+                    .map_err(|_| ApiError::internal("invalid saved caller pool"))?,
+                index,
+            )
+        } else {
+            let index = (Uuid::new_v4().as_u128() % pool.len() as u128) as i64;
+            tx.execute(
+                "INSERT INTO conference_caller_rotation(tenant_id,conversation_id,numbers_json,next_index) VALUES(?1,?2,?3,?4)",
+                params![
+                    tenant,
+                    cid,
+                    serde_json::to_string(pool)
+                        .map_err(|_| ApiError::internal("caller pool encoding failed"))?,
+                    index
+                ],
+            )?;
+            (pool.to_vec(), index)
+        };
+        if numbers.is_empty() || index < 0 || index as usize >= numbers.len() {
+            return Err(ApiError::internal("invalid saved caller rotation"));
+        }
+        let selected = numbers[index as usize].clone();
+        tx.execute(
+            "UPDATE conference_caller_rotation SET next_index=?3 WHERE tenant_id=?1 AND conversation_id=?2",
+            params![tenant, cid, (index as usize + 1) % numbers.len()],
+        )?;
+        tx.commit()?;
+        Ok(Some(selected))
+    }
+
     pub fn record_conference_receipt(
         &self,
         tenant: &str,

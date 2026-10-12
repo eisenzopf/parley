@@ -40,10 +40,15 @@ pub async fn bind(state: &AppState) -> Result<()> {
         let addr: std::net::SocketAddr = bind
             .parse()
             .map_err(|_| ApiError::bad_request("invalid CONFERENCE_SIP_BIND"))?;
-        let config = state
+        let mut config = state
             .config
             .conference_network
             .sip_config(addr, &state.config.conference_sip_from)?;
+        if !state.config.conference_sip_caller_pool.is_empty() {
+            // With a pool, each call's From supplies the owned caller ID.
+            // A fixed P-Asserted-Identity would override that number at Telnyx.
+            config.pai_uri = None;
+        }
         let adapter = rvoip_sip::SipAdapter::from_config(config)
             .await
             .map_err(|e| ApiError::internal(format!("conference SIP adapter: {e}")))?;
@@ -130,9 +135,10 @@ pub async fn invite(
         for (member,kind,role) in [(target,ParticipantKind::Human,ParticipantRole::Customer),(&assistant,ParticipantKind::Ai,ParticipantRole::Agent)] {
             state.orchestrator.join_session(sid.clone(),ParticipantId::from_string(&member.participant_id),kind,role).await.map_err(core_error)?;
         }
-        let ticket = state.orchestrator.prepare_outbound_connection(rvoip_core::OriginateRequest::new(
+        let caller = crate::conference_network::caller_identity(state, tenant, cid)?;
+        let ticket = state.orchestrator.prepare_outbound_connection(state.config.conference_network.sip_request(rvoip_core::OriginateRequest::new(
             sid.clone(),ParticipantId::from_string(&target.participant_id),endpoint,rvoip_core::Direction::Outbound,Default::default()
-        ).with_transport(Transport::Sip)).await.map_err(core_error)?;
+        ).with_transport(Transport::Sip), &caller)?).await.map_err(core_error)?;
         let connid = ticket.connection_id().to_string();
         state.store.prepare_conference_voice(tenant,cid,&sid.to_string(),request_id,target,&assistant,&connid,purpose,&actor.participant_id)?;
         // The durable association exists before activation can emit events.

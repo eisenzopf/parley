@@ -57,17 +57,21 @@ pub async fn move_to_phone(
             "original speaking bridge is unavailable",
         ));
     }
+    let caller = crate::conference_network::caller_identity(state, tenant, cid)?;
     let ticket = state
         .orchestrator
         .prepare_outbound_connection(
-            rvoip_core::OriginateRequest::new(
-                SessionId::from_string(sid),
-                ParticipantId::from_string(&owner.participant_id),
-                endpoint,
-                rvoip_core::Direction::Outbound,
-                Default::default(),
-            )
-            .with_transport(Transport::Sip),
+            state.config.conference_network.sip_request(
+                rvoip_core::OriginateRequest::new(
+                    SessionId::from_string(sid),
+                    ParticipantId::from_string(&owner.participant_id),
+                    endpoint,
+                    rvoip_core::Direction::Outbound,
+                    Default::default(),
+                )
+                .with_transport(Transport::Sip),
+                &caller,
+            )?,
         )
         .await
         .map_err(|_| ApiError::internal("telephone connection preparation failed"))?;

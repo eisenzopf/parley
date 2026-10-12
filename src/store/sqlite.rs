@@ -112,6 +112,7 @@ impl Store {
         conn.execute_batch(include_str!("../../migrations/006_conference_receipts.sql"))?;
         conn.execute_batch(include_str!("../../migrations/007_conference_inbox.sql"))?;
         conn.execute_batch(include_str!("../../migrations/008_conference_phone.sql"))?;
+        conn.execute_batch(include_str!("../../migrations/009_conference_caller_pool.sql"))?;
         let store = Self {
             conn: Mutex::new(conn),
         };

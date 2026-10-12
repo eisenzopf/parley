@@ -16,6 +16,9 @@ pub struct Config {
     pub conference_sip_bind: Option<String>,
     #[serde(default)]
     pub conference_sip_from: String,
+    /// Owned voice numbers used as David's outbound caller IDs.
+    #[serde(default)]
+    pub conference_sip_caller_pool: Vec<String>,
     #[serde(default)]
     pub conference_network: crate::conference_network::ConferenceNetwork,
     #[serde(default = "default_sqlite")]
@@ -86,6 +89,7 @@ impl Default for Config {
             bind_sip: default_bind_sip(),
             conference_sip_bind: None,
             conference_sip_from: String::new(),
+            conference_sip_caller_pool: vec![],
             conference_network: Default::default(),
             sqlite_path: default_sqlite(),
             blob_dir: default_blob(),
@@ -272,6 +276,9 @@ fn overlay_env(cfg: &mut Config) {
     }
     if let Ok(v) = std::env::var("CONFERENCE_SIP_FROM") {
         cfg.conference_sip_from = v;
+    }
+    if let Ok(v) = std::env::var("CONFERENCE_SIP_CALLER_POOL") {
+        cfg.conference_sip_caller_pool = v.split(',').map(str::trim).map(str::to_owned).collect();
     }
     if let Some(v) = first_env(&["PARLEY_BIND_HTTP"]) {
         cfg.bind_http = v;
