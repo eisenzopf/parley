@@ -94,14 +94,25 @@ impl Commands {
     }
 
     fn sms_eligibility(&self, tenant: &str, cid: &str) -> Result<Vec<Value>> {
-        Ok(self.state.store.conference_members(tenant, cid)?.into_iter()
-            .filter(|m| m.role != "assistant").map(|m| {
-                let eligible = m.sms.as_deref().is_some_and(|to| crate::sms::enrollment::authorize(
-                    &self.state.config, &self.state.config.telnyx_from, to,
-                    "Rudeless Thelve: Requested demo coordination. Reply STOP to opt out.",
-                ).is_ok());
+        Ok(self
+            .state
+            .store
+            .conference_members(tenant, cid)?
+            .into_iter()
+            .filter(|m| m.role != "assistant")
+            .map(|m| {
+                let eligible = m.sms.as_deref().is_some_and(|to| {
+                    crate::sms::enrollment::authorize(
+                        &self.state.config,
+                        &self.state.config.telnyx_from,
+                        to,
+                        "Rudeless Thelve: Requested demo coordination. Reply STOP to opt out.",
+                    )
+                    .is_ok()
+                });
                 json!({"participant_id":m.participant_id,"role":m.role,"eligible":eligible})
-            }).collect())
+            })
+            .collect())
     }
 
     fn cached(
@@ -350,6 +361,28 @@ impl Commands {
             }
             #[cfg(feature = "media-webrtc")]
             MessageType::SessionUpdate => {
+                if request.payload["kind"] == "call_david" {
+                    if request.sid.is_some() || request.connid.is_some() {
+                        return Err(ApiError::bad_request(
+                            "opening call requires no Session or connection ID",
+                        ));
+                    }
+                    let result = crate::conference_voice::call_david(
+                        &self.state,
+                        &tenant,
+                        cid,
+                        &member,
+                        required_string(&request.payload, "purpose")?,
+                        &request.id,
+                    )
+                    .await?;
+                    let sid = result["sid"].as_str().unwrap().to_string();
+                    let connid = result["connid"].as_str().unwrap().to_string();
+                    return Ok(UctpEnvelope::new(MessageType::ConnectionOffer, result)
+                        .with_cid(cid)
+                        .with_sid(sid)
+                        .with_connid(connid));
+                }
                 let sid = request
                     .sid
                     .as_deref()
@@ -418,6 +451,45 @@ impl Commands {
                             .with_cid(cid)
                             .with_sid(sid)
                             .with_connid(connid))
+                    }
+                    #[cfg(feature = "vapi")]
+                    "consult_with_assistant" => {
+                        let connid = request
+                            .connid
+                            .as_deref()
+                            .ok_or_else(|| ApiError::bad_request("connid required"))?;
+                        let result = crate::conference_consult::begin(
+                            &self.state,
+                            &tenant,
+                            cid,
+                            sid,
+                            &member,
+                            connid,
+                            &request.id,
+                        )
+                        .await?;
+                        Ok(UctpEnvelope::new(
+                            MessageType::Ack,
+                            json!({"profile":PROFILE,"session":result}),
+                        )
+                        .with_cid(cid))
+                    }
+                    #[cfg(feature = "vapi")]
+                    "connect_organizer" => {
+                        let result = crate::conference_consult::connect(
+                            &self.state,
+                            &tenant,
+                            cid,
+                            sid,
+                            &member,
+                            &request.id,
+                        )
+                        .await?;
+                        Ok(UctpEnvelope::new(
+                            MessageType::Ack,
+                            json!({"profile":PROFILE,"session":result}),
+                        )
+                        .with_cid(cid))
                     }
                     "handoff_to_browser" => {
                         let connid = request

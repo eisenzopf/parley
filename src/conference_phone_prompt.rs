@@ -87,6 +87,13 @@ impl PhonePrompt {
         })
     }
 
+    pub(crate) fn silence(stream: Arc<dyn MediaStream>) -> Result<Self, &'static str> {
+        let mut prompt = Self::new(stream)?;
+        let silence = if prompt.payload_type == 0 { 0xff } else { 0xd5 };
+        prompt.audio = vec![silence; 160];
+        Ok(prompt)
+    }
+
     pub(crate) async fn send_next(&mut self, deadline: Instant) -> Result<(), &'static str> {
         let codec = self.stream.codec();
         if codec.clock_rate_hz != 8000

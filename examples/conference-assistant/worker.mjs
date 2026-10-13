@@ -9,6 +9,13 @@ import { campaignSms } from './sms.mjs';
 const digest = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const text = (value, limit = 16000) => typeof value === 'string' && value.trim().length > 0 && value.length <= limit;
 
+export function transferConsent(value) {
+  const words = String(value || '').toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
+  if (words.some(word => ['no', 'not', "don't", 'dont', 'wait', 'stop', 'later', 'but'].includes(word))) return false;
+  return ['yes', 'yeah', 'yep', 'yup', 'sure', 'okay', 'ok', 'absolutely'].includes(words[0])
+    || ['go ahead', 'please do', 'put him through', 'connect him', 'connect jeff', 'bring him in', 'bridge him in', 'transfer him'].some(phrase => words.join(' ').startsWith(phrase));
+}
+
 export class FileState {
   constructor(path) { this.path = path; }
   async load(cid) {
@@ -96,10 +103,33 @@ export class ConferenceWorker {
     const facts = this.state.events.filter(e => e.payload.sid === sid && e.event_type === 'session.transcript'
       && e.payload.speaker === this.self.participant_id && e.payload.is_final === true);
     const spoken = facts.map(e => e.payload.text).join(' ');
-    // This only wakes the planner. It does not establish pickup or authorize a
-    // handoff; the planner must check the organizer's attributed confirmation.
-    return /\b(?:i['’]ll|i will|let me|while i)\s+bring\s+jonathan\s+(?:in\b|into\s+(?:(?:this|the|same)\s+)*(?:call|conversation)\b)/i.test(spoken)
+    // This only wakes the planner. It does not authorize a handoff; the planner
+    // must check the organizer's attributed request or question for Jonathan.
+    return /\b(?:i['’]ll|i will|let me|while i)\s+(?:bring\s+jonathan\s+(?:in\b|into\s+(?:(?:this|the|same)\s+)*(?:call|conversation)\b)|get\s+(?:jonathan|him)\s+on\s+the\s+line\b)/i.test(spoken)
       ? facts.at(-1) : null;
+  }
+
+  organizerCallPermission() {
+    const organizer = this.members.find(m => m.role === 'organizer');
+    const invitation = this.state.events.findLast(e => e.event_type === 'message.accepted'
+      && e.payload.from === this.self.participant_id && e.payload.delivery === 'sms'
+      && e.payload.to?.includes(organizer?.participant_id) && /\b(?:can|may|could) i call\b/i.test(e.payload.body));
+    if (!invitation) return false;
+    const reply = this.state.events.findLast(e => e.seq > invitation.seq && e.event_type === 'message.received'
+      && e.payload.from === organizer?.participant_id && e.payload.delivery === 'sms');
+    return transferConsent(reply?.payload.body);
+  }
+
+  consultTransfer(sid) {
+    const consult = this.state.events.findLast(e => e.event_type === 'browser.consulting' && (!sid || e.payload.sid === sid));
+    if (!consult) return null;
+    const facts = this.state.events.filter(e => e.payload.sid === consult.payload.sid && e.seq > consult.seq);
+    if (facts.some(e => ['browser.speaking', 'browser.ended', 'browser.failed', 'session.ended', 'session.failed', 'session.interrupted', 'session.assistant_failed'].includes(e.event_type))) return null;
+    const owner = this.members.find(m => m.role === 'owner');
+    const reply = facts.findLast(e => e.event_type === 'session.transcript' && e.payload.is_final === true && e.payload.speaker === owner?.participant_id);
+    const intent = facts.find(e => e.event_type === 'session.assistant_action' && e.payload.source === 'vapi'
+      && e.payload.participant_id === this.self.participant_id && e.payload.action === 'connect_organizer');
+    return { consult, reply, intent, ready: !this.state.connectedConsults?.[consult.payload.sid] && !!intent && transferConsent(reply?.payload.text) };
   }
 
   finishIntent(sid) {
@@ -137,6 +167,14 @@ export class ConferenceWorker {
     // A completed booking may have a full readback queued before the exact
     // closing announcement; unavailable answering assistants stay bounded.
     return this.announcementReady(intent, intent.payload.reason === 'completed' ? 30000 : 10000);
+  }
+
+  bookingPurpose(purpose) {
+    // Opening-call context also contains the later SMS/organizer workflow.
+    // Only the booking portion belongs in the travel agent's live call.
+    const boundary = String(purpose).search(/# Later coordination\b|\bText Jeff\b|\bCall the organizer directly\b/i);
+    const booking = boundary < 0 ? purpose : purpose.slice(0, boundary).trim();
+    return `${booking}\nThis call is only with the travel booking agent. Collect the airline, flight number, departure and arrival, then end this call. The coordinator handles all later communications in separate calls.`;
   }
 
   activeBookerWithFinishTool() {
@@ -204,7 +242,7 @@ export class ConferenceWorker {
         && e.payload.details?.join_confirmed === true && e.payload.details?.retained_connid === call.payload.connid
         && e.payload.details?.retired_connid === browser.payload.connid)
       || !facts.some(e => e.event_type === 'session.ended'))
-      throw new Error('Voice rehearsal requires an attributed organizer reply, successful owner browser and phone handoffs, and the ended confirmation call. A failed call does not confirm pickup; tell the owner what failed and wait.');
+      throw new Error('Voice rehearsal requires an attributed organizer reply, successful owner browser and phone handoffs, and the ended confirmation call. A failed call does not establish a schedule agreement; tell the owner what failed and wait.');
   }
 
   async step() {
@@ -225,7 +263,7 @@ export class ConferenceWorker {
     if (snapshot.events.length === 500) return;
     if (this.requireOwnerStart && !this.state.events.some(e => ['message.accepted', 'message.received'].includes(e.event_type)
       && e.payload.from === owner.participant_id && e.payload.to?.includes(this.self.participant_id)
-      && e.payload.content_type !== 'application/json')) {
+      && e.payload.content_type !== 'application/json') && !this.state.events.some(e => e.event_type === 'session.invited' && e.payload.transport === 'webrtc' && e.payload.participant_id === owner.participant_id && e.payload.initiated_by === owner.participant_id)) {
       this.state.needsDecision = false;
       await this.storage.save(this.state);
       return;
@@ -270,10 +308,48 @@ export class ConferenceWorker {
         return;
       }
     }
+    // Jonathan's opening browser call owns the turn until its callback promise
+    // finishes. A hangup, timeout or failed provider never starts telephone work.
+    const intro = this.state.events.findLast(e => e.event_type === 'session.invited'
+      && e.payload.transport === 'webrtc' && e.payload.participant_id === owner.participant_id && e.payload.initiated_by === owner.participant_id);
+    if (intro && !this.state.introsStarted?.[intro.payload.sid]) {
+      const facts = this.state.events.filter(e => e.payload.sid === intro.payload.sid);
+      const ended = facts.some(e => e.event_type === 'session.ended');
+      const completed = facts.some(e => e.event_type === 'session.assistant_action' && e.payload.action === 'finish_call'
+        && e.payload.reason === 'completed' && e.payload.source === 'vapi' && e.payload.participant_id === this.self.participant_id);
+      if (!ended) return;
+      if (!completed || !this.state.finishedCalls?.[intro.payload.sid]
+        || facts.some(e => ['session.failed', 'session.assistant_failed', 'session.interrupted'].includes(e.event_type))) {
+        const followup = this.state.events.some(e => e.seq > intro.seq && ['message.accepted', 'message.received'].includes(e.event_type)
+          && e.payload.from === owner.participant_id && e.payload.content_type !== 'application/json');
+        if (!followup) return;
+      } else if (!this.state.pending) {
+        const booker = this.members.find(m => m.role === 'booker');
+        const decision = { actions: [{ type: 'call_participant', to: booker.participant_id, purpose: this.bookingPurpose(intro.payload.purpose) }], source: 'opening-call', source_seq: intro.seq };
+        this.state.pending = this.prepare(decision);
+        this.state.introsStarted ??= {};
+        this.state.introsStarted[intro.payload.sid] = true;
+        this.state.needsDecision = false;
+        await this.storage.save(this.state);
+        await this.executePending();
+        return;
+      }
+    }
     // Wait for both people to finish speaking, including the AI readback.
     if (this.voiceBusy()) return;
     if (this.state.pending) {
       await this.executePending();
+      return;
+    }
+    const consult = this.consultTransfer();
+    if (consult) {
+      if (consult.ready) {
+        const decision = { actions: [{ type: 'connect_organizer', sid: consult.consult.payload.sid }], source: 'voice-consent', source_seq: consult.reply.seq };
+        this.state.pending = this.prepare(decision);
+        this.state.needsDecision = false;
+        await this.storage.save(this.state);
+        await this.executePending();
+      }
       return;
     }
     // The voice agent owns the paced questions, readback and closing. A second
@@ -325,7 +401,7 @@ export class ConferenceWorker {
       if (!announcement || !callFacts.some(e => e.event_type === 'session.transcript'
         && e.payload.speaker === organizer.participant_id && e.payload.is_final === true)) return;
       missingBrowserJoinTool = { sid: organizerCall.payload.sid, announcement_seq: announcement.seq,
-        reason: 'David announced the browser handoff but did not invoke its tool. Verify pickup from the organizer transcript and invite this existing Session once.' };
+        reason: "David announced the browser handoff but did not invoke its tool. Verify the organizer's request or question for Jonathan from the transcript and invite this existing Session once." };
     }
     if (!this.state.needsDecision) return;
     const context = {
@@ -357,7 +433,7 @@ export class ConferenceWorker {
       try {
         if (missingBrowserJoinTool && (decision.actions.length > 1 || decision.actions.some(a => a.type !== 'request_browser_join'
           || a.sid !== missingBrowserJoinTool.sid)))
-          throw new Error('Missing handoff tool recovery must invite the existing organizer Session once, or wait with no actions if pickup is unconfirmed');
+          throw new Error('Missing handoff tool recovery must invite the existing organizer Session once, or wait with no actions if the organizer has not requested Jonathan');
         batch = this.prepare(decision); break;
       }
       catch (error) {
@@ -467,14 +543,19 @@ export class ConferenceWorker {
         if (typeof action.to !== 'string') throw new Error('call_participant.to must be one participant ID string, not an array; only message.to is an array');
         if (!known.has(action.to) || action.to === this.self.participant_id) throw new Error('call_participant.to must exactly match a human participants[].participant_id');
         if (!this.capabilities?.assistant_voice || !this.capabilities?.operations?.includes('session.invite')) throw new Error('Assistant voice invitation is unavailable');
+        if (this.mode !== 'voice-only' && this.members.find(m => m.participant_id === action.to)?.role === 'organizer' && !this.organizerCallPermission())
+          throw new Error('Text the organizer asking Can I call you, then wait for their affirmative SMS reply before calling');
         if (!text(action.purpose, 4000)) throw new Error('Voice invitation needs a non-empty purpose string');
         if (this.mode === 'voice-only' && !bookerRetry && this.state.events.some(e => e.event_type === 'session.invited' && e.payload.participant_id === action.to))
           throw new Error('This participant was already called in this voice rehearsal; do not redial automatically');
         batch.requests.push(this.client.command('session.invite', this.cid, { medium: 'voice', to: action.to, purpose: action.purpose }, { id: `env_${seed}_${batch.requests.length}` }));
+      } else if (action.type === 'connect_organizer') {
+        if (!this.consultTransfer(action.sid)?.ready) throw new Error('Transfer requires David speaking privately with the owner and their explicit yes');
+        batch.requests.push(this.client.command('session.update', this.cid, { kind: 'connect_organizer' }, { sid: action.sid, id: `env_${seed}_${batch.requests.length}` }));
       } else if (action.type === 'end_voice') {
         if (!this.capabilities?.operations?.includes('session.end') || !this.state.events.some(e => e.event_type === 'session.invited' && e.payload.sid === action.sid)) throw new Error('Unknown voice Session');
         if (this.activeBookerWithFinishTool()?.payload.sid === action.sid && !this.finishIntent(action.sid))
-          throw new Error('The booker voice agent must finish its confirmation and closing before ending this call');
+          throw new Error('The booker voice agent must finish its closing before ending this call');
         if (this.mode === 'voice-only' && this.state.events.some(e => e.event_type === 'session.invited' && e.payload.sid === action.sid
           && this.members.find(m => m.participant_id === e.payload.participant_id)?.role === 'organizer') && !this.finishIntent(action.sid))
           throw new Error('The owner ends the organizer call after browser and phone handoff; leave it open');
@@ -497,7 +578,8 @@ export class ConferenceWorker {
       }
       const browserInvitation = request.type === 'message.send' && request.payload?.content_type === 'application/json'
         && JSON.parse(request.payload.body).type === 'travel.browser_invitation';
-      if (request.type === 'session.end' || browserInvitation) {
+      const organizerInvite = this.mode !== 'voice-only' && request.type === 'session.invite' && this.members.find(m => m.participant_id === request.payload?.to)?.role === 'organizer';
+      if (organizerInvite || request.type === 'session.end' || browserInvitation || (request.type === 'session.update' && request.payload?.kind === 'connect_organizer')) {
         // Speech can start while the planner request is in flight. Re-read the
         // journal before hanging up or ringing the owner. Keep the exact saved
         // command pending until the confirmation finishes.
@@ -520,7 +602,9 @@ export class ConferenceWorker {
           const intent = this.state.events.find(e => e.event_type === 'session.assistant_action'
             && e.payload.sid === sid && e.payload.participant_id === this.self.participant_id
             && e.payload.source === 'vapi' && e.payload.action === 'request_browser_join');
-          if (intent?.payload.announcement_queued === true && !this.announcementReady(intent, 15000)) {
+          const held = this.state.events.some(e => e.event_type === 'session.organizer_held' && e.payload.sid === sid);
+          if (intent?.payload.hold_before_invitation === true ? !held
+            : intent?.payload.announcement_queued === true && !this.announcementReady(intent, 15000)) {
             await this.storage.save(this.state); return;
           }
         }
@@ -537,6 +621,15 @@ export class ConferenceWorker {
           }
         }
       }
+      if (organizerInvite && !batch.attempted?.includes(request.id) && !this.organizerCallPermission()) {
+        batch.results.push({request_id:request.id,state:'skipped',reason:'organizer SMS permission no longer current'});
+        batch.next++; await this.storage.save(this.state); continue;
+      }
+      if (request.type === 'session.update' && request.payload?.kind === 'connect_organizer'
+          && !batch.attempted?.includes(request.id) && !this.consultTransfer(request.sid)?.ready) {
+        batch.results.push({ request_id: request.id, state: 'skipped', reason: 'owner consent no longer current' });
+        batch.next++; await this.storage.save(this.state); continue;
+      }
       // Timeout/disconnect leaves the exact request pending. Reconnect replays
       // it; the server's durable idempotency record prevents duplicate sends.
       if (Array.isArray(batch.attempted) && !batch.attempted.includes(request.id)) {
@@ -544,6 +637,10 @@ export class ConferenceWorker {
         await this.storage.save(this.state);
       }
       const response = await this.client.request(request);
+      if (request.type === 'session.update' && request.payload?.kind === 'connect_organizer') {
+        this.state.connectedConsults ??= {};
+        this.state.connectedConsults[request.sid] = { request_id: request.id };
+      }
       if (batch.finishIntent && request.type === 'session.end') {
         this.state.finishedCalls ??= {};
         this.state.finishedCalls[request.sid] = { request_id: request.id, source_seq: batch.finishIntent.seq };

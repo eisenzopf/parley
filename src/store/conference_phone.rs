@@ -67,13 +67,13 @@ impl Store {
             "phone.prepared",
             Some(request),
             &[owner.participant_id.clone()],
-            json!({"sid":sid,"connid":connid,"participant_id":owner.participant_id,"source_connid":route.connection_id,"state":"prepared","transport":"sip","confirmation":"answer and press 1"}),
+            json!({"sid":sid,"connid":connid,"participant_id":owner.participant_id,"source_connid":route.connection_id,"state":"prepared","transport":"sip","confirmation":"answer"}),
         )?;
         tx.commit()?;
         Ok(())
     }
 
-    /// Compare-and-set: late signaling, duplicate digits and late cancellation
+    /// Compare-and-set: late signaling and late cancellation
     /// cannot regress a committed handoff or resurrect a terminal attempt.
     pub fn transition_phone_move(
         &self,
@@ -143,7 +143,7 @@ impl Store {
             "phone.speaking",
             Some(&phone.request_id),
             &[phone.participant_id.clone()],
-            json!({"sid":phone.session_id,"connid":phone.connection_id,"participant_id":phone.participant_id,"state":"speaking","transport":"sip","details":{"retained_connid":retained,"retired_connid":phone.source_connection_id,"bridge_id":bridge,"join_confirmed":true}}),
+            json!({"sid":phone.session_id,"connid":phone.connection_id,"participant_id":phone.participant_id,"state":"speaking","transport":"sip","details":{"retained_connid":retained,"retired_connid":phone.source_connection_id,"bridge_id":bridge,"join_confirmed":true,"join_method":"answer"}}),
         )?;
         tx.commit()?;
         Ok(())

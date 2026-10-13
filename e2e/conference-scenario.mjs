@@ -44,11 +44,11 @@ const plannerApi = createServer(async (request, response) => {
     const browserInvitation = events.find(e => e.event_type === 'message.accepted' && e.payload.from === role('assistant')
       && e.payload.content_type === 'application/json' && JSON.parse(e.payload.body).type === 'travel.browser_invitation');
     let next = [];
-    if (!booker) next = [{ type: 'call_participant', to: role('booker'), purpose: 'Find a sandbox alternative for Jonathan and Alex after their flight was canceled.' }];
+    if (!booker) next = [{ type: 'call_participant', to: role('booker'), purpose: 'Find a sandbox alternative for Jonathan and Andrew after their flight was canceled.' }];
     else if (!ended(booker) && transcript('booker')) next = [{ type: 'end_voice', sid: booker.payload.sid }];
-    else if (voiceOnly && ended(booker) && !organizer) next = [{ type: 'call_participant', to: role('organizer'), purpose: `Confirm sandbox pickup from the booker itinerary: ${transcript('booker').payload.text}. Keep the call open for Jonathan to join.` }];
-    else if (!voiceOnly && ended(booker) && !organizerText) next = [{ type: 'message', to: [role('organizer')], delivery: 'sms', body: `Sandbox itinerary: ${transcript('booker').payload.text} Can you confirm pickup?` }];
-    else if (reply && !organizer) next = [{ type: 'call_participant', to: role('organizer'), purpose: `Confirm sandbox pickup. Booker: ${transcript('booker').payload.text} Organizer reply: ${reply.payload.body}` }];
+    else if (voiceOnly && ended(booker) && !organizer) next = [{ type: 'call_participant', to: role('organizer'), purpose: `Share the updated itinerary and discuss Jonathan arriving late from the booker itinerary: ${transcript('booker').payload.text}. Keep the call open for Jonathan to join.` }];
+    else if (!voiceOnly && ended(booker) && !organizerText) next = [{ type: 'message', to: [role('organizer')], delivery: 'sms', body: `Sandbox itinerary: ${transcript('booker').payload.text} Can I call you?` }];
+    else if (reply && !organizer) next = [{ type: 'call_participant', to: role('organizer'), purpose: `Share the updated itinerary and discuss Jonathan arriving late. Booker: ${transcript('booker').payload.text} Organizer reply: ${reply.payload.body}` }];
     else if (organizer && !ended(organizer) && transcript('organizer') && !browserInvitation)
       next = [{ type: 'request_browser_join', sid: organizer.payload.sid }];
     else if (ended(organizer) && !context.proposal) {
@@ -147,7 +147,7 @@ try {
   await page.locator('#open-settings').click();
   await page.locator('#task').fill(scenario.task);
   await page.locator('#close-settings').click();
-  await page.getByRole('button', { name: 'Start coordinating' }).click();
+  await page.getByRole('button', { name: 'Call David · Start demo' }).click();
   await expect(page.locator('#join')).toBeDisabled();
   const poll = async (fn, message) => {
     const deadline = Date.now() + plannerTimeout;
@@ -163,6 +163,13 @@ try {
     failureEvidenceSaved = true;
     throw new Error(message);
   };
+  await poll(async () => (await ownerCheck.snapshot(fixture.cid)).events.some(e => e.event_type === 'session.ended'
+    && worker.state.events.some(start => start.event_type === 'session.invited' && start.payload.transport === 'webrtc' && start.payload.sid === e.payload.sid)), 'Opening browser call did not complete');
+  const openingFacts = (await ownerCheck.snapshot(fixture.cid)).events;
+  const intro = openingFacts.find(e => e.event_type === 'session.invited' && e.payload.transport === 'webrtc');
+  assert.ok(openingFacts.some(e => e.event_type === 'session.transcript' && e.payload.sid === intro.payload.sid && e.payload.speaker === roleIds.owner && /missed/.test(e.payload.text)), 'Opening reply attributed to Jonathan');
+  const introEnded = openingFacts.find(e => e.event_type === 'session.ended' && e.payload.sid === intro.payload.sid);
+  assert.ok(!openingFacts.some(e => e.event_type === 'session.invited' && e.payload.transport === 'sip' && e.seq < introEnded.seq), 'Travel agent starts only after opening call ends');
   if (!voiceOnly) {
   // Observe independently while the worker recovers its deliberately dropped
   // snapshot response. The observer must not use the worker's reconnecting socket.
@@ -171,9 +178,9 @@ try {
   await poll(async () => (await deliveryEvents()).some(e => e.event_type === 'message.delivery' && e.payload.state === 'sent'), 'Organizer SMS did not reach provider acceptance');
   }
   const events = () => ownerCheck.snapshot(fixture.cid).then(s => s.events);
-  await poll(async () => (await events()).filter(e => e.event_type === 'session.invited').length === (voiceOnly ? 2 : 1), 'Expected sequential voice invitations');
+  await poll(async () => (await events()).filter(e => e.event_type === 'session.invited' && e.payload.participant_id !== roleIds.owner).length === (voiceOnly ? 2 : 1), 'Expected sequential voice invitations');
   let snapshot = await events();
-  const invitedBooker = snapshot.find(e => e.event_type === 'session.invited');
+  const invitedBooker = snapshot.find(e => e.event_type === 'session.invited' && e.payload.participant_id === roleIds.booker);
   assert.ok(snapshot.some(e => e.event_type === 'session.ended' && e.payload.sid === invitedBooker.payload.sid));
   if (liveVoice) {
     const text = spokenBy(snapshot, 'booker');
@@ -207,15 +214,21 @@ try {
     }
     return snapshot.some(e => e.event_type === 'session.transcript' && e.payload.text === scenario.organizer_transcript);
   }, 'Organizer confirmation call did not produce an attributed transcript');
-  const invitations = snapshot.filter(e => e.event_type === 'session.invited'); assert.equal(invitations.length, 2);
+  const invitations = snapshot.filter(e => e.event_type === 'session.invited' && e.payload.participant_id !== roleIds.owner); assert.equal(invitations.length, 2);
   const organizerCall = invitations[1].payload;
   await expect(page.locator('#join')).toBeEnabled({ timeout: plannerTimeout });
-  await expect(page.locator('#join')).toHaveText('Answer organizer call');
-  await expect(page.locator('#browser-invitation')).toContainText('Organizer call ready');
+  await expect(page.locator('#join')).toHaveText('Answer David');
+  await expect(page.locator('#browser-invitation')).toContainText('David is calling');
   await expect.poll(() => page.evaluate(() => window.scenarioRingTones)).toBeGreaterThan(0);
   await page.screenshot({ path: `test-results/${screenshotPrefix}-ringing.png`, fullPage: true });
   if (!livePlanner) assert.equal(lostSnapshotReply, true, 'Actual worker loop must recover the simulated lost snapshot response');
-  await expect(page.locator('[data-edge=vapi]')).toHaveAttribute('data-state', 'active');
+  await expect(page.locator('[data-edge=vapi]')).toHaveAttribute('data-state', /^(active|held)$/);
+  await poll(async () => (await events()).some(e => e.event_type === 'session.organizer_held'), 'Jeff must be on hold before the browser rings');
+  const beforeAnswer = await events();
+  const held = beforeAnswer.find(e => e.event_type === 'session.organizer_held');
+  const ringingInvite = beforeAnswer.find(e => e.event_type === 'message.accepted' && e.payload.content_type === 'application/json' && JSON.parse(e.payload.body).type === 'travel.browser_invitation');
+  assert.ok(held.seq < ringingInvite.seq, 'Hold must commit before inviting Jonathan');
+  await expect(page.locator('[data-person=organizer]')).toHaveAttribute('data-status', 'On hold');
   await expect(page.locator('#network-ids')).toContainText(organizerCall.connid);
   await pauseForRecording(3000);
   const before = await (await fetch(`${fixture.http}/__scenario_fixture`)).json(); assert.ok(before.ai_frames > 10);
@@ -236,6 +249,8 @@ try {
     navigator.mediaDevices.getUserMedia = async () => destination.stream;
   });
   await page.locator('#join').click();
+  await expect(page.locator('#call-state')).toContainText('WITH DAVID', {timeout:20000});
+  await expect(page.locator('#move-phone')).toBeHidden();
   await expect(page.locator('[data-edge=browser]')).toHaveAttribute('data-state', 'speaking', { timeout: 20000 });
   await expect(page.locator('[data-edge=vapi]')).toHaveAttribute('data-state', 'retired');
   await expect(page.locator('#retained')).toContainText('Same telephone Connection retained');
@@ -282,49 +297,30 @@ try {
   // changes during the callback instead of assuming a lifetime counter is zero.
   const beforeCallback = await fixtureStats();
   await page.locator('#move-phone').click();
-  await poll(async () => (await events()).some(e => e.event_type === 'phone.answered'), 'First callback did not answer');
-  await poll(async () => {
-    const journal = await events();
-    const failed = journal.find(e => e.event_type === 'phone.failed');
-    if (failed) throw new Error(`Callback prompt failed: ${JSON.stringify(failed.payload.details)}`);
-    return (await fixtureStats()).phone_pending_audio > 5;
-  }, 'Callback must receive an audible confirmation prompt before pressing 1');
-  let phoneEvents = (await events()).filter(e => e.event_type.startsWith('phone.'));
-  const firstPhone = phoneEvents.find(e => e.event_type === 'phone.prepared');
+  await poll(async () => (await fixtureStats()).phone_ringing === 1, 'First callback did not ring');
+  const firstPhone = (await events()).find(e => e.event_type === 'phone.prepared');
   const original = (await ownerCheck.request(ownerCheck.command('conversation.inspect', fixture.cid, { request_id: firstPhone.request_id }))).payload.evidence;
-  assert.deepEqual(await ownerCheck.request(original.request), original.response, 'Exact replay must return the original acceptance');
+  assert.deepEqual(await ownerCheck.request(original.request), original.response, 'Exact replay returns original acceptance');
   await assert.rejects(ownerCheck.request(phoneCommand(ownerCheck)), error => error.code === 409);
   const pendingBefore = await fixtureStats();
-  await fetch(`${fixture.http}/__scenario_phone_digit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ digit: '9' }) });
-  await new Promise(resolve => setTimeout(resolve, 500));
-  assert.equal((await events()).filter(e => e.event_type === 'phone.speaking').length, 0, 'Answering or wrong DTMF must not move audio');
+  await new Promise(resolve => setTimeout(resolve, 1000));
   const pendingAfter = await fixtureStats();
-  assert.equal(pendingAfter.phone_answered, 1); assert.equal(pendingAfter.phone_frames, beforeCallback.phone_frames, 'Unconfirmed callback audio must not reach the retained telephone');
-  assert.ok(pendingAfter.human_frames > pendingBefore.human_frames, 'Browser audio must continue while callback awaits confirmation');
-  assert.equal(pendingAfter.ended, false);
+  assert.equal(pendingAfter.phone_answered, 0);
+  assert.equal((await events()).filter(e => e.event_type === 'phone.speaking').length, 0);
+  assert.equal(pendingAfter.phone_frames, beforeCallback.phone_frames, 'Ringing mobile must not take over audio');
+  assert.ok(pendingAfter.human_frames > pendingBefore.human_frames, 'Browser audio continues while mobile rings');
   await page.locator('#cancel-phone').click();
   await poll(async () => (await events()).some(e => e.event_type === 'phone.cancelled'), 'First callback was not cancelled');
-  await poll(async () => (await fixtureStats()).phone_ended === 1, 'Cancelled callback SIP resource must end');
+  await poll(async () => (await fixtureStats()).phone_ended === 1, 'Cancelled ringing call must end');
   await expect(page.locator('[data-edge=browser]')).toHaveAttribute('data-state', 'speaking');
   await expect(page.locator('#move-phone')).toBeEnabled();
   await page.locator('#move-phone').click();
-  await poll(async () => (await events()).filter(e => e.event_type === 'phone.answered').length === 2, 'Second callback did not answer');
-  const waitingBefore = await fixtureStats();
-  // The live carrier previously cleared a silent, unbridged callback after
-  // about 21 seconds. Exercise a longer pre-confirmation window with real
-  // RTP, repeated spoken prompts and in-band G.711 silence.
-  await new Promise(resolve => setTimeout(resolve, 23000));
-  const waitingAfter = await fixtureStats();
-  assert.ok(waitingAfter.phone_pending_frames - waitingBefore.phone_pending_frames > 1000, 'Pending callback must keep sending actual RTP across the waiting period');
-  assert.ok(waitingAfter.phone_pending_audio - waitingBefore.phone_pending_audio > 25, 'Repeated callback prompt must be audible');
-  assert.equal(waitingAfter.phone_ended, 1, 'Unconfirmed second callback must still be open');
-  assert.equal(waitingAfter.phone_frames, beforeCallback.phone_frames, 'Callback audio must remain isolated throughout the confirmation wait');
-  assert.equal((await events()).filter(e => e.event_type === 'phone.speaking').length, 0);
-  // Drop only UCTP control. Accepted callback work must continue on the server,
-  // without redialing or needing a browser command to complete confirmation.
+  await poll(async () => (await fixtureStats()).phone_ringing === 2, 'Second callback did not ring');
+  // The accepted server-side move must complete even if browser control drops.
   await page.evaluate(() => window.scenarioControlSocket.close());
-  await fetch(`${fixture.http}/__scenario_phone_digit`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ digit: '1' }) });
-  await poll(async () => (await events()).some(e => e.event_type === 'phone.speaking'), 'Confirmed callback did not replace browser audio');
+  await fetch(`${fixture.http}/__scenario_phone_answer`, { method: 'POST' });
+  await poll(async () => (await events()).some(e => e.event_type === 'phone.speaking'), 'Answer did not automatically replace browser audio');
+  assert.equal((await events()).filter(e => e.event_type === 'phone.confirmed').length, 0, 'No DTMF confirmation is needed');
   await expect(page.locator('[data-edge=phone]')).toHaveAttribute('data-state', 'speaking', { timeout: 15000 });
   await expect(page.locator('[data-edge=browser]')).toHaveAttribute('data-state', 'retired');
   await expect(page.locator('#phone-status')).toContainText('Same Conversation, same Session');
@@ -335,6 +331,7 @@ try {
   assert.equal(phoneSpeaking.payload.details.retained_connid, organizerCall.connid);
   assert.equal(phoneSpeaking.payload.details.retired_connid, browserJoined.payload.connid);
   assert.equal(phoneSpeaking.payload.details.join_confirmed, true);
+  assert.equal(phoneSpeaking.payload.details.join_method, 'answer');
   await new Promise(resolve => setTimeout(resolve, 500));
   const stable = await fixtureStats();
   // Give local media scheduling a bounded interval under browser/CPU load,
@@ -349,7 +346,7 @@ try {
   assert.equal(phoneAudio.human_frames, stable.human_frames, 'Retired browser must no longer be audible');
   assert.ok(phoneAudio.phone_frames >= stable.phone_frames + 5 && phoneAudio.owner_received_frames >= stable.owner_received_frames + 5,
     JSON.stringify({ before: stable, after: phoneAudio }));
-  assert.equal(phoneAudio.phone_answered, 2); assert.equal(phoneAudio.ended, false);
+  assert.equal(phoneAudio.phone_answered, 1); assert.equal(phoneAudio.ended, false);
   await page.screenshot({ path: `test-results/${screenshotPrefix}-phone-move.png`, fullPage: true });
   await pauseForRecording(3000);
   await page.locator('#end').click();
@@ -370,7 +367,7 @@ try {
   await expect(page.locator('#evidence')).toContainText('"type": "message.send"');
   await expect(page.locator('#evidence')).toContainText(voiceOnly ? 'travel.voice_complete' : '[Sandbox arrangements]');
   await expect(page.locator('#evidence')).not.toContainText(fixture.assistant_token);
-  await expect(page.locator('#network-title')).toContainText('Connections at event #');
+  await expect(page.locator('#network-title')).toContainText('event #');
   await page.screenshot({ path: `test-results/${screenshotPrefix}-reveal.png`, fullPage: true });
   await pauseForRecording(5000);
   if (recording) {
@@ -379,7 +376,7 @@ try {
   }
   if (workerError) throw workerError;
   snapshot = await events();
-  assert.equal(snapshot.filter(e => e.event_type === 'session.invited').length, 2);
+  assert.equal(snapshot.filter(e => e.event_type === 'session.invited' && e.payload.participant_id !== roleIds.owner).length, 2);
   assert.equal(snapshot.filter(e => e.event_type === 'browser.speaking').length, 1);
   const handoff = snapshot.find(e => e.event_type === 'browser.speaking');
   assert.equal(handoff.payload.details.retained_connid, organizerCall.connid);

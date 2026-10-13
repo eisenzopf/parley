@@ -35,6 +35,9 @@ impl LiveBindings {
 pub struct AppState {
     /// Serialize speaking-peer commits with explicit voice teardown.
     pub conference_handoff: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(all(feature = "media-webrtc", feature = "vapi"))]
+    pub(crate) conference_holds:
+        Arc<tokio::sync::Mutex<HashMap<String, crate::conference_consult::HoldAudio>>>,
     #[cfg(feature = "uctp")]
     pub uctp_adapter: Arc<std::sync::OnceLock<Arc<rvoip_websocket::UctpWsAdapter>>>,
     #[cfg(feature = "media-webrtc")]
@@ -152,6 +155,8 @@ impl App {
         let app = Self {
             state: AppState {
                 conference_handoff: Arc::new(tokio::sync::Mutex::new(())),
+                #[cfg(all(feature = "media-webrtc", feature = "vapi"))]
+                conference_holds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
                 #[cfg(feature = "uctp")]
                 uctp_adapter: Arc::new(std::sync::OnceLock::new()),
                 #[cfg(feature = "media-webrtc")]

@@ -18,6 +18,7 @@ const audioSettings = new AudioSettings({ root: $('audio-settings'), remoteAudio
 });
 let joining = false, browserAccess = false, creatingConversation = false, workerReady = true, lastSnapshot = null, connectingConversation = false;
 let loadingConversation = false, browserConnected = false, savingPhones = false, phonesDirty = false, dismissedCall = null;
+let replayTimer = null, replayPlaying = false, selectedPerson = null, selectedLink = null, detailSeq = null;
 const defaultTask = $('task').value;
 
 const error = value => { $('notice').textContent = value?.message || String(value); };
@@ -27,7 +28,7 @@ const params = new URL(location.href).searchParams;
 if (params.get('cid')) $('cid').value = params.get('cid');
 if (params.get('uctp')) $('url').value = params.get('uctp');
 else if (location.protocol === 'https:') $('url').value = `wss://${location.host}/uctp`;
-if (params.get('mode') === 'voice-only') $('task').value = "My flight from Reno to Atlanta was canceled. Please ask the travel booker whether the reservations for Alex and me can be changed to a replacement flight with two seats. Aim to depart around 11 AM and arrive by 4 PM. This is a sandbox change only, with no real purchase. Then call the conference organizer directly to confirm pickup using the booker's actual answer. Bring me into that same call from my browser so I can move to my phone. Leave the call open until I end it, then ask me to approve the final sandbox arrangements. SMS is deferred until campaign approval; do not send any texts.";
+if (params.get('mode') === 'voice-only') $('task').value = "I missed my flight from Reno to Atlanta. Ask the booking agent for a replacement for Andrew and me, aiming to leave around 11 AM and arrive by 4 PM. Get the airline, flight number, departure time, and arrival time; no gate, terminal, seat confirmation, or final readback. Use their actual offered times. This is a sandbox change with no real purchase. Call the organizer directly. Let the conference organizer know I missed my flight and will arrive a little late. Keep it casual and friendly; do not ask for pickup. If the organizer asks whether I can shorten my presentation by 30 minutes or has another question for me, put Jeff on hold and ring my browser. When I answer, give me the flight update and ask whether to connect Jeff. Only after I say yes, bridge us together in that same call. I can then move to my phone. Leave the call open until I end it, then ask me to approve the final sandbox arrangements. Do not send any texts.";
 
 function trace(direction, frame) {
   if (frame.type.startsWith('auth.') || frame.type.startsWith('conversation.')) return;
@@ -39,7 +40,7 @@ function trace(direction, frame) {
 async function connectConversation(access) {
   connectingConversation = true; $('conversation-list').disabled = true;
   browserConnected = false; updateNewConversationButton();
-  $('notice').textContent = ''; ringtone.stop(); joining = false;
+  $('notice').textContent = ''; ringtone.stop(); joining = false; pauseReplay(); selectedPerson = null; selectedLink = null;
   try {
     client?.close(); audio?.closeLocal(); lastSnapshot = null; projection = null; activeSession = null; interruptedSession = null; $('recovery').classList.add('hidden'); $('join').disabled = true; $('end').disabled = true; cid = access.cid; cursor = 0; events.length = 0; traces.clear(); channels.clear();
     client = new UctpClient(access.url, access.token, { trace, timeoutMs: 20000 });
@@ -105,7 +106,7 @@ function consume(snapshot) {
   const eligible = new Set((snapshot.sms_eligibility || []).filter(e => e.eligible).map(e => e.participant_id));
   const smsReady = !needsSmsReview || (['owner', 'organizer'].every(role => snapshot.participants.some(m => m.role === role && m.sms && eligible.has(m.participant_id)))
     && snapshot.participants.filter(m => m.sms).every(m => eligible.has(m.participant_id)));
-  $('send').disabled = creatingConversation || loadingConversation || snapshot.state === 'closed' || !smsReady || (browserAccess && !workerReady);
+  $('send').disabled = !!audio?.peer || creatingConversation || loadingConversation || snapshot.state === 'closed' || !smsReady || (browserAccess && !workerReady);
   const build = capabilities.implementation;
   $('build-info').textContent = build
     ? `Rvoip ${stageText(build.rvoip_baseline)}${build.rvoip_patched ? ' + conference patches' : ''} · ${stageText(build.profile)} · UCTP v${build.envelope_version} / ${stageText(build.control_transport)}${build.experimental ? ' · experimental' : ''}`
@@ -155,19 +156,19 @@ function consume(snapshot) {
   const current = projection.voice;
   const invitation = snapshot.state === 'closed' ? null : projection.browserInvitation;
   $('join').disabled = joining || !capabilities.browser_handoff || !invitation;
-  $('join').textContent = joining ? 'Joining organizer call…' : invitation ? 'Answer organizer call' : 'Waiting for organizer call';
+  $('join').textContent = joining ? 'Answering David…' : invitation ? 'Answer David' : 'Waiting for David';
   $('browser-invitation').classList.toggle('hidden', !invitation || joining);
-  $('browser-invitation').textContent = invitation ? 'Organizer call ready—answer here to join Jonathan from this browser.' : '';
+  $('browser-invitation').textContent = invitation ? 'David is calling with your flight update. Answer to talk to him.' : '';
   ringtone.start(joining || dismissedCall === invitation?.sid ? null : invitation?.sid);
-  const inBrowser = current?.browser === 'speaking';
+  const openingCall = current?.participant === me.participant_id && current?.event && !['ended', 'failed', 'interrupted'].includes(current.state);
+  const withDavid = current?.browser === 'consulting';
+  const inBrowser = openingCall || withDavid || current?.browser === 'speaking';
   const onPhone = current?.phone === 'speaking';
   const showCall = !!invitation || joining || inBrowser || onPhone;
-  $('stop-session').classList.toggle('hidden', !activeSession || showCall);
-  $('stop-session').disabled = !!interruptedSession;
   $('call-panel').classList.toggle('hidden', !showCall || snapshot.state === 'closed');
   $('call-panel').classList.toggle('incoming', !!invitation && !joining && dismissedCall !== invitation.sid);
-  $('call-state').textContent = joining ? 'CONNECTING' : onPhone ? 'ON YOUR PHONE' : inBrowser ? 'CONNECTED · BROWSER AUDIO' : 'INCOMING CALL';
-  $('call-title').textContent = name(current?.participant) || 'Conference organizer';
+  $('call-state').textContent = joining ? 'CONNECTING' : onPhone ? 'ON YOUR PHONE' : openingCall ? (current.ai === 'active' ? 'WITH DAVID' : 'CALLING DAVID…') : withDavid ? 'WITH DAVID · JEFF ON HOLD' : inBrowser ? 'CONNECTED · BROWSER AUDIO' : 'INCOMING CALL';
+  $('call-title').textContent = invitation ? `${assistant?.name || 'David'} is calling` : (withDavid || openingCall) ? (assistant?.name || 'David') : name(current?.participant) || 'Conference organizer';
   $('join').classList.toggle('hidden', !invitation && !joining);
   $('dismiss-call').classList.toggle('hidden', !invitation || joining || dismissedCall === invitation.sid);
   $('mute-call').classList.toggle('hidden', !inBrowser);
@@ -175,13 +176,13 @@ function consume(snapshot) {
   $('mute-call').textContent = audio?.muted ? 'Unmute microphone' : 'Mute microphone';
   $('mute-call').setAttribute('aria-pressed', String(!!audio?.muted));
   $('end').classList.toggle('hidden', !inBrowser && !onPhone);
-  $('move-phone').classList.toggle('hidden', !inBrowser);
+  $('move-phone').classList.toggle('hidden', !inBrowser || withDavid || openingCall);
 
   const phonePending = ['prepared', 'dialing', 'answered', 'confirmed', 'committing'].includes(current?.phone);
   $('move-phone').disabled = snapshot.state === 'closed' || !capabilities.phone_handoff || !me.sip || current?.browser !== 'speaking' || phonePending || current?.phone === 'unknown';
   $('cancel-phone').classList.toggle('hidden', !phonePending);
   $('cancel-phone').disabled = !phonePending || current?.phone === 'committing';
-  $('phone-status').textContent = phonePending ? 'Your phone is being called. Answer and press 1 to join; your browser audio stays connected until the move succeeds.'
+  $('phone-status').textContent = phonePending ? 'Your phone is being called. Answer to move the call automatically; your browser audio stays connected until the move succeeds.'
     : current?.phone === 'speaking' ? 'You’re on your phone. Same Conversation, same Session, organizer’s call retained.'
     : current?.phone === 'unknown' ? 'Phone move needs reconciliation. Check the actual call before retrying.'
     : ['failed', 'cancelled'].includes(current?.phone) ? 'Phone move did not complete. Browser audio retained if still available.' : '';
@@ -217,6 +218,7 @@ function addEvent(event) {
   if (event.event_type === 'message.delivery') label = `${name(p.participant_id)} · SMS ${p.state}`;
   if (event.event_type === 'message.received') label = `${name(p.from)} replied: ${p.body}`;
   if (event.event_type === 'session.transcript') label = `${name(p.speaker)}: ${p.text}`;
+  if (event.event_type === 'browser.consulting') label = 'Jonathan answered David · Jeff is on hold';
   if (event.event_type === 'browser.speaking') label = 'Jonathan joined · telephone connection retained';
   if (event.event_type === 'phone.speaking') label = 'Moved to Jonathan’s phone · same Conversation, telephone connection retained';
   button.append(document.createTextNode(stageText(label)));
@@ -227,6 +229,7 @@ function addEvent(event) {
 }
 
 async function inspectEvent(seq) {
+  pauseReplay();
   const event = events.find(e => e.seq === seq); if (!event) return;
   $('timeline').classList.add('hidden'); $('wire-panel').classList.remove('hidden'); $('show-timeline').classList.remove('hidden');
   $('activity-title').textContent = 'One interface. See the request.';
@@ -249,10 +252,18 @@ function renderStage(connected) {
     view = new ConversationProjection(cid, [...members.values()]);
     for (const event of events) { if (event.seq > selectedSeq) break; view.apply(event); }
   }
-  $('network-title').textContent = selectedSeq ? `Connections at event #${selectedSeq}` : 'One Conversation, across the connections';
+  const scene = view.scene();
+  $('network-title').textContent = selectedSeq ? `${scene.title} · event #${selectedSeq}` : scene.title;
+  $('scene-mode').textContent = selectedSeq ? 'DIAGRAM REPLAY · LIVE CALL CONTINUES' : connected ? 'LIVE CONVERSATION' : 'CONNECTION RECOVERING';
+  $('scene-description').textContent = scene.description;
   $('show-live').classList.toggle('hidden', !selectedSeq);
   const network = view.network(selectedSeq ? undefined : connected, voiceOnly ? 'deferred' : capabilities?.sms_mode);
-  renderNetwork($('network'), network, selectedRoute, inspectEvent);
+  renderNetwork($('network'), network, selectedRoute, (_seq, link) => {
+    selectedPerson = null; selectedLink = link.id; selectedRoute = link.route; renderStage(client?.authenticated === true);
+  }, card => { selectedLink = null; selectedPerson = card.id; renderPersonDetails(card, view); }, !!selectedSeq);
+  if (selectedPerson) renderPersonDetails(scene.cards.find(c => c.id === selectedPerson), view);
+  if (selectedLink) renderConnectionDetails(scene.links.find(link => link.id === selectedLink), view);
+  renderReplay();
   const voice = view.voice;
   $('network-ids').textContent = voice ? `Session ${voice.sid} · remote Connection ${voice.remote}${voice.phoneConnection ? ` · owner phone ${voice.phoneConnection}` : ''}` : 'No voice Session has been invited.';
   $('retained').textContent = network.retained ? `Same telephone Connection retained at handoff${['ended', 'failed', 'interrupted'].includes(voice.state) ? ` · Session ${voice.state}` : ''}` : 'Speaking-peer replacement will retain the existing telephone Connection.';
@@ -276,13 +287,88 @@ function renderStage(connected) {
   $('facts-empty').classList.toggle('hidden', projection.facts.length > 0);
 }
 
+function renderPersonDetails(card, view) {
+  $('network-detail').classList.toggle('hidden', !card);
+  if (!card) return;
+  detailSeq = card.pendingSeq || card.seq;
+  $('network-detail-title').textContent = stageText(card.name);
+  const connections = view.scene().links.filter(link => link.from === card.id || link.to === card.id);
+  $('network-detail-body').textContent = stageText(`${card.device} · ${card.status}${card.pending ? `\n${card.pending}` : ''}${connections.map(link => `\n${link.label} · ${link.state}`).join('')}${view.voice ? `\nSession: ${view.voice.sid}` : ''}`);
+  $('network-detail-evidence').disabled = !detailSeq;
+}
+function renderConnectionDetails(link, view) {
+  $('network-detail').classList.toggle('hidden', !link);
+  if (!link) return;
+  const scene = view.scene(), person = id => scene.cards.find(card => card.id === id).name;
+  detailSeq = link.seq;
+  $('network-detail-title').textContent = stageText(`${person(link.from)} ↔ ${person(link.to)}`);
+  $('network-detail-body').textContent = `${link.label} · ${link.state}${view.voice ? `\nSession: ${view.voice.sid}` : ''}`;
+  $('network-detail-evidence').disabled = !detailSeq;
+}
+function pauseReplay() {
+  clearTimeout(replayTimer); replayTimer = null; replayPlaying = false;
+  $('replay-play').textContent = '▶ Replay'; $('replay-play').setAttribute('aria-label', 'Play conversation replay'); $('replay-play').setAttribute('aria-pressed', 'false');
+}
+function replayAt(seq) {
+  selectedSeq = seq; selectedRoute = null;
+  renderStage(client?.authenticated === true);
+}
+function renderReplay() {
+  const index = selectedSeq ? Math.max(0, events.findIndex(e => e.seq === selectedSeq)) : Math.max(0, events.length - 1);
+  $('replay-position').max = Math.max(0, events.length - 1); $('replay-position').value = index;
+  $('replay-position').disabled = events.length < 2; $('replay-play').disabled = events.length < 2;
+  const event = events[index];
+  $('replay-caption').textContent = event ? `${selectedSeq ? 'Replay' : 'Live'} · ${index + 1} / ${events.length}` : 'Waiting for the first event';
+  $('replay-position').setAttribute('aria-valuetext', event ? `${index + 1} of ${events.length} recorded events, ${event.event_type}` : 'No recorded events');
+  const milestone = projection.milestones.findLast(m => m.seq <= (selectedSeq || projection.seq));
+  const nav = $('story-milestones'), signature = projection.milestones.map(m => m.seq).join(',');
+  if (nav.dataset.signature !== signature) {
+    nav.dataset.signature = signature; nav.replaceChildren();
+    for (const item of projection.milestones) {
+      const button = document.createElement('button'); button.textContent = item.label;
+      button.dataset.seq = item.seq; button.title = `Replay event #${item.seq}`;
+      button.onclick = () => { pauseReplay(); replayAt(item.seq); }; nav.append(button);
+    }
+  }
+  for (const button of nav.children) button.setAttribute('aria-current', String(Number(button.dataset.seq) === milestone?.seq));
+  if (nav.dataset.active !== String(milestone?.seq)) {
+    nav.dataset.active = milestone?.seq;
+    const active = nav.querySelector('[aria-current=true]');
+    if (active) {
+      const x = active.offsetLeft - nav.offsetLeft;
+      if (x < nav.scrollLeft) nav.scrollLeft = x;
+      else if (x + active.offsetWidth > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = x + active.offsetWidth - nav.clientWidth + 12;
+    }
+  }
+}
+function playReplay() {
+  const next = projection.milestones.find(m => m.seq > selectedSeq);
+  if (next) replayAt(next.seq);
+  else { if (events.length) replayAt(events.at(-1).seq); pauseReplay(); return; }
+  replayTimer = setTimeout(playReplay, 1800);
+}
+$('replay-play').onclick = () => {
+  if (replayPlaying) { pauseReplay(); return; }
+  replayPlaying = true; $('replay-play').textContent = 'Ⅱ Pause'; $('replay-play').setAttribute('aria-label', 'Pause conversation replay'); $('replay-play').setAttribute('aria-pressed', 'true');
+  if (!selectedSeq || selectedSeq >= events.at(-1)?.seq) selectedSeq = 0;
+  playReplay();
+};
+$('replay-position').oninput = event => { pauseReplay(); const item = events[Number(event.target.value)]; if (item) replayAt(item.seq); };
+$('network-detail-close').onclick = () => { selectedPerson = null; selectedLink = null; selectedRoute = null; renderPersonDetails(null); renderStage(client?.authenticated === true); };
+$('network-detail-evidence').onclick = () => { if (detailSeq) inspectEvent(detailSeq); };
+
 async function send(body, content_type = 'text/plain') {
   return client.request(client.command('message.send', cid, { msg_id: messageId(), to: [assistant.participant_id], body, content_type, delivery: 'chat' }));
 }
 $('send').onclick = async () => {
   await ringtone.unlock();
   $('send').disabled = true;
-  try { await send($('task').value); $('send').textContent = 'Send follow-up'; $('task-composer').open = false; }
+  try {
+    const started = events.some(e => e.event_type === 'session.invited' || (e.event_type === 'message.accepted' && e.payload.from === me.participant_id && e.payload.content_type !== 'application/json'));
+    if (!started) await audio.callDavid($('task').value);
+    else await send($('task').value);
+    $('send').textContent = 'Send follow-up'; $('task-composer').open = false;
+  }
   catch (e) { error(e); }
   finally { $('send').disabled = false; }
 };
@@ -330,14 +416,18 @@ $('verify-ended').onclick = async () => {
 
 $('community').addEventListener('toggle', () => { $('future-connectors').classList.toggle('hidden', !$('community').open); $('contribution-panel').classList.toggle('expanded', $('community').open); });
 
-$('show-live').onclick = () => { selectedSeq = null; selectedRoute = null; renderStage(client?.authenticated === true); };
+$('show-live').onclick = () => { pauseReplay(); selectedSeq = null; selectedRoute = null; renderStage(client?.authenticated === true); };
 
 $('show-timeline').onclick = () => {
   $('wire-panel').classList.add('hidden'); $('timeline').classList.remove('hidden'); $('show-timeline').classList.add('hidden');
   $('activity-title').textContent = 'The Conversation, as it happens';
-  selectedSeq = null; selectedRoute = null; renderStage(client?.authenticated === true);
+  pauseReplay(); selectedSeq = null; selectedRoute = null; renderStage(client?.authenticated === true);
 };
 renderNetwork($('network'), new ConversationProjection('', []).network(false, undefined), null, () => {});
+window.matchMedia('(max-width:700px)').addEventListener('change', () => {
+  if (projection) renderStage(client?.authenticated === true);
+  else renderNetwork($('network'), new ConversationProjection('', []).network(false, undefined), null, () => {});
+});
 
 $('presentation-view').onclick = () => { const active = document.body.classList.toggle('presenting'); $('presentation-view').textContent = active ? 'Scroll view' : 'Room view'; };
 
@@ -416,7 +506,7 @@ async function showManagedConversation(session, resetTask = false) {
     $('access-status').textContent = 'Your browser is ready. Select New conversation to get started.';
     $('status').textContent = 'Ready for a new conversation';
   }
-  if (resetTask) { $('task').value = defaultTask; $('task-composer').open = true; $('send').textContent = 'Start coordinating'; }
+  if (resetTask) { $('task').value = defaultTask; $('task-composer').open = true; $('send').textContent = 'Call David · Start demo'; }
   updateNewConversationButton();
 }
 async function loadPhones() {
@@ -441,7 +531,6 @@ $('phone-settings').onsubmit = async event => {
   } catch (e) { $('phone-settings-status').textContent = e.message; }
   finally { savingPhones = false; $('save-phones').disabled = false; updateNewConversationButton(); }
 };
-$('stop-session').onclick = () => $('end').click();
 $('dismiss-call').onclick = () => { dismissedCall = projection?.browserInvitation?.sid; ringtone.stop(); if (lastSnapshot) consume(lastSnapshot); };
 $('mute-call').onclick = () => { audio?.setMuted(!audio.muted); if (lastSnapshot) consume(lastSnapshot); };
 $('new-conversation').onclick = async () => {

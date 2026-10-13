@@ -6,3 +6,5 @@ pub use sqlite::{
 };
 pub mod conference;
 pub mod conference_phone;
+
+pub mod conference_consult;

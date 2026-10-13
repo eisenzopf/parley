@@ -113,7 +113,7 @@ try {
       const before=await control.snapshot(fixture.cid);
       const browserEvent=before.events.find(e=>e.event_type==='browser.speaking'&&e.payload.sid===fixture.sid);
       assert.ok(browserEvent,'Committed browser route required');
-      console.log(JSON.stringify({event:'pstn.phone_move.starting',instruction:'Answer the callback on the 3669 phone and press 1. Keep the 0737 phone on the existing call.'}));
+      console.log(JSON.stringify({event:'pstn.phone_move.starting',instruction:'Answer the callback on the 3669 phone to move the call automatically. Keep the 0737 phone on the existing call.'}));
       const moveStart=Date.now();await page.locator('#move-phone').click();
       await expect(page.locator('[data-edge=phone]')).toHaveAttribute('data-state','speaking',{timeout:50000});
       await expect(page.locator('[data-edge=browser]')).toHaveAttribute('data-state','retired');

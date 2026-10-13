@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -20,11 +20,11 @@ async function fixture(t) {
   const bundle = (cid, roster = participants) => ({ cid, url: 'ws://127.0.0.1:7443', participants: roster.map(p => ({ ...p,
     participant_id: `${p.role}_${cid}`, subject: `${p.role}_${cid}`, token: `${p.role}-${cid}`, token_expires_at: now + 43200000 })) });
   const options = { stateDir: directory, participants, origin: 'https://conference.example', httpUrl: 'http://127.0.0.1:8080',
-    uctpUrl: 'ws://127.0.0.1:7443', adminToken: 'private-admin-fixture', passwordVerifier, now: () => now,
+    uctpUrl: 'ws://127.0.0.1:7443', adminToken: 'private-admin-fixture', passwordVerifier, environment: {}, now: () => now,
     provision: async args => { if (!prep.has(args.statePath)) { const b = bundle(`conv_${++created}`, args.participants); prep.set(args.statePath, b); records.set(b.cid, 'open'); }
       return { bundle: prep.get(args.statePath) }; },
     makeClient: (_url, token) => { const cid = token.match(/conv_\d+/)[0]; return { connect: async () => {}, close: () => {},
-      snapshot: async () => ({ state: records.get(cid), participants: bundle(cid).participants }),
+      snapshot: async () => ({ state: records.get(cid), participants: [...prep.values()].find(b => b.cid === cid)?.participants || bundle(cid).participants }),
       command: (type, cid, payload, extra) => ({ type, cid, payload, ...extra }),
       request: async frame => { commands.push(frame); if (frame.type === 'conversation.close') { records.set(cid, 'closed'); return { type: 'ack' }; }
         return { payload: { readiness: { active_sessions: active, unsettled_sms: pendingSms, ready_for_new_task: !active && !pendingSms }, capabilities: {} } }; },
@@ -201,4 +201,44 @@ test('saved phone settings require sign-in, survive restart and affect only new 
   assert.equal(f.commands.filter(c => ['session.invite', 'message.send'].includes(c.type)).length, 0);
   f.manager.state.pending = { request_id: 'pending' };
   assert.equal((await request(phones)).status, 409);
+});
+
+test('setup synchronizes new SMS numbers and repairs an already pending conversation on retry', async t => {
+  const f = await fixture(t);
+  const path = join(f.options.stateDir, 'enrollments.json');
+  const original = { version: 1, source: 'https://rudeless.ai/sms', sender_number: '+12025550199', campaign_id: 'demo', recipients: [] };
+  await writeFile(path, JSON.stringify(original));
+  Object.assign(f.manager.environment, { PARLEY_SMS_ENROLLMENT_PATH: path, PARLEY_TELNYX_FROM: original.sender_number, PARLEY_SMS_CAMPAIGN_ID: 'demo' });
+  const makeClient = f.manager.makeClient;
+  f.manager.makeClient = (...args) => {
+    const client = makeClient(...args), request = client.request;
+    client.request = async frame => {
+      const response = await request(frame);
+      if (frame.type === 'conversation.preflight') {
+        const enrolled = JSON.parse(await readFile(path, 'utf8')).recipients;
+        response.payload.capabilities = { sms_enrollment_required: true, sms_mode: 'telnyx', sms_configured: true };
+        response.payload.sms_eligibility = (await client.snapshot()).participants.filter(p => p.sms).map(p => ({
+          participant_id: p.participant_id, eligible: enrolled.some(r => r.number === p.sms && r.web_enrollment_confirmed && !r.revoked),
+        }));
+      }
+      return response;
+    };
+    return client;
+  };
+  f.manager.providerCheck = async () => ({ configuration_ready: true });
+  const phones = { owner: '+14155550100', booker: '+16505550101', organizer: '+14155550102' };
+  const response = await f.http('phones', { method: 'POST', headers: { cookie: f.cookie, origin: f.options.origin, 'content-type': 'application/json' }, body: JSON.stringify({ phones }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).recipients.map(r => r.number), [phones.owner, phones.organizer]);
+  // Reproduce a request stuck on the old version with a missing enrollment.
+  await writeFile(path, JSON.stringify(original));
+  f.manager.state.pending = { request_id: '7'.repeat(32), previous: null, participants: f.manager.configuredParticipants() };
+  await f.manager.save();
+  const created = await f.post('7'.repeat(32));
+  assert.equal(created.status, 200, await created.text());
+  assert.equal(f.manager.state.pending, null);
+  const owner = f.manager.state.current.participants.find(p => p.role === 'owner');
+  assert.equal(owner.sms, phones.owner);
+  assert.equal(owner.sip, `sip:${phones.owner}@sip.example`);
+  assert.equal(f.commands.filter(c => ['session.invite', 'message.send'].includes(c.type)).length, 0);
 });

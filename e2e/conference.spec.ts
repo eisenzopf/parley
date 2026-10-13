@@ -41,7 +41,13 @@ test(`conference task, owner approval, ${smsRecipients} SMS updates, and actual 
     await expect(page.locator('#mission-updates')).toHaveText(smsRecipients === 4 ? '0/4 final updates sent · 0/4 delivered' : '0/2 final updates sent · 0/2 delivered · 0/2 chat updates accepted');
     await expect(page.locator('#build-info')).toContainText('Rvoip 0.3.12 + conference patches');
     await expect(page.locator('#build-info')).toContainText('UCTP v1 / websocket');
-    await page.getByRole('button', { name: 'Start coordinating' }).click();
+    // This fixture covers chat approval/SMS only. The separate media scenario
+    // exercises the Start button's real opening browser call.
+    const taskOwner = new UctpClient('ws://127.0.0.1:17443', ownerToken);
+    try {
+      await taskOwner.connect();
+      await taskOwner.request(taskOwner.command('message.send', cid, {msg_id:`msg_fixture_task_${cid}`,to:[roster.find(m=>m.role==='assistant').participant_id],delivery:'chat',content_type:'text/plain',body:'Prepare the sandbox arrangements for approval.'}));
+    } finally { taskOwner.close(); }
     await expect.poll(async () => (await assistant!.history(cid)).length).toBe(1);
     await worker.step();
     await expect(page.locator('#proposal')).toBeVisible();
@@ -54,7 +60,7 @@ test(`conference task, owner approval, ${smsRecipients} SMS updates, and actual 
     const smsEvent = page.locator('.event').filter({ hasText: /Vapi assistant → Organizer · sms accepted/ });
     await smsEvent.click();
     await expect(page.locator('#evidence-caption')).toContainText('Actual client request');
-    await expect(page.locator('#network-title')).toContainText('Connections at event #');
+    await expect(page.locator('#network-title')).toContainText('event #');
     await expect(page.locator('[data-edge=sms]')).toHaveClass(/selected/);
     await expect(page.locator('#evidence')).toContainText('"type": "message.send"');
     await expect(page.locator('#evidence')).toContainText(saved.lastBatch.requests[3].id);
@@ -63,7 +69,7 @@ test(`conference task, owner approval, ${smsRecipients} SMS updates, and actual 
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.screenshot({ path: `test-results/conference-stage-${smsRecipients}-sms.png`, fullPage: true });
     await page.locator('#show-timeline').click();
-    await expect(page.locator('#network-title')).toContainText('One Conversation');
+    await expect(page.locator('#scene-mode')).toContainText('LIVE CONVERSATION');
     await page.locator('#community').evaluate((element: HTMLDetailsElement) => { element.open = true; });
     await expect(page.locator('#future-connectors')).toBeVisible();
     const owner = new UctpClient('ws://127.0.0.1:17443', ownerToken);

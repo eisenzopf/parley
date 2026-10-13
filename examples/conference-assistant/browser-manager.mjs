@@ -14,6 +14,7 @@ import { requireFullSms } from '../../scripts/conference-worker-readiness.mjs';
 import { validatePasswordVerifier, verifyPassword } from './browser-password.mjs';
 
 import { phoneSettings, configurePhones } from './phone-settings.mjs';
+import { syncPhoneEnrollment } from './phone-enrollment.mjs';
 
 const prefix = '/v1/conference/browser';
 const cookieName = 'parley_browser';
@@ -237,6 +238,7 @@ export class BrowserConversationManager {
     let participants;
     try { participants = configurePhones(this.participants, values); }
     catch (error) { throw fail(400, error.message); }
+    if (this.mode === 'full') await syncPhoneEnrollment(participants, this.environment, this.now());
     this.state.phoneParticipants = participants;
     await this.save();
     return { phones: phoneSettings(participants) };
@@ -247,6 +249,9 @@ export class BrowserConversationManager {
     if (this.state.pending && this.state.pending.request_id !== requestId) throw fail(409, 'A conversation is being created. Retry the pending request.');
     this.state.pending ||= { request_id: requestId, previous: this.state.current?.cid || null, participants: this.configuredParticipants() };
     await this.save();
+    // Also repair a pending creation saved before setup synchronized enrollment.
+    if (this.mode === 'full' && this.state.phoneParticipants)
+      await syncPhoneEnrollment(this.state.pending.participants, this.environment, this.now());
     const previous = this.state.current;
     await this.stopWorker();
     if (previous) {

@@ -35,6 +35,9 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     let ws_url = format!("ws://{}/audio", ws_listener.local_addr().unwrap());
     let vapi_received = Arc::new(AtomicUsize::new(0));
     let received = vapi_received.clone();
+    let owner_received = Arc::new(AtomicUsize::new(0));
+    let owner_frames = owner_received.clone();
+    let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let assistant_tone_enabled = Arc::new(AtomicBool::new(true));
     let assistant_tone = assistant_tone_enabled.clone();
     let burst_mode = Arc::new(AtomicBool::new(false));
@@ -42,57 +45,76 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     let bursts_sent = Arc::new(AtomicUsize::new(0));
     let provider_bursts_sent = bursts_sent.clone();
     let provider = tokio::spawn(async move {
-        let (tcp, _) = ws_listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
-        let mut tick = tokio::time::interval(Duration::from_millis(20));
-        let mut position = 0;
-        let mut burst_tick = 0usize;
-        loop {
-            tokio::select! {
-                _ = tick.tick() => {
-                    // David finishes his announcement, then waits silently
-                    // while the owner answers the browser. No RTP payloads
-                    // are emitted during that pause.
-                    if !assistant_tone.load(Ordering::SeqCst) { continue; }
-                    if provider_bursts.load(Ordering::SeqCst) {
-                        // Coalesced utterances followed by caller pauses expose
-                        // timestamp drift hidden by continuously paced tones.
-                        burst_tick += 1;
-                        if burst_tick % 30 == 1 && provider_bursts_sent.load(Ordering::SeqCst) < 10 {
-                            let mut pcm = Vec::new();
-                            for _ in 0..20 {
-                                pcm.extend(tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes));
-                                position += 320;
+        for phase in 0..2 {
+            if phase == 1 {
+                assistant_tone.store(true, Ordering::SeqCst);
+                provider_bursts.store(false, Ordering::SeqCst);
+            }
+            let (tcp, _) = ws_listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            let mut tick = tokio::time::interval(Duration::from_millis(20));
+            let mut position = 0;
+            let mut burst_tick = 0usize;
+            loop {
+                tokio::select! {
+                    control = control_rx.recv() => {
+                        if let Some(text) = control {
+                            let event=json!({"type":"transcript","role":"user","transcriptType":"final","transcript":text});
+                            if socket.send(Message::Text(event.to_string().into())).await.is_err() { break; }
+                            let tool=json!({"type":"tool-calls","toolCallList":[{"id":format!("transfer-{}",position),"function":{"name":"connect_organizer","arguments":"{}"}}]});
+                            if socket.send(Message::Text(tool.to_string().into())).await.is_err() { break; }
+                        }
+                    },
+                    _ = tick.tick() => {
+                        // David finishes his announcement, then waits silently
+                        // while the owner answers the browser. No RTP payloads
+                        // are emitted during that pause.
+                        if !assistant_tone.load(Ordering::SeqCst) { continue; }
+                        if provider_bursts.load(Ordering::SeqCst) {
+                            // Coalesced utterances followed by caller pauses expose
+                            // timestamp drift hidden by continuously paced tones.
+                            burst_tick += 1;
+                            if burst_tick % 30 == 1 && provider_bursts_sent.load(Ordering::SeqCst) < 10 {
+                                let mut pcm = Vec::new();
+                                for _ in 0..20 {
+                                    pcm.extend(tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes));
+                                    position += 320;
+                                }
+                                if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
+                                provider_bursts_sent.fetch_add(1, Ordering::SeqCst);
                             }
-                            if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
-                            provider_bursts_sent.fetch_add(1, Ordering::SeqCst);
+                            continue;
                         }
-                        continue;
-                    }
-                    let pcm: Vec<u8> = tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes).collect();
-                    position += 320;
-                    if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
-                    if position == 8000 || position == 16000 {
-                        let kind = if position == 8000 {"partial"} else {"final"};
-                        let speech = json!({"type":"speech-update","role":"user","status":if position==8000 {"started"} else {"stopped"},"turn":1});
-                        if socket.send(Message::Text(speech.to_string().into())).await.is_err() {break;}
-                        let transcript = json!({"type":"transcript","role":"user","transcriptType":kind,"transcript":"Sandbox pickup confirmed at terminal C."});
-                        if socket.send(Message::Text(transcript.to_string().into())).await.is_err() {break;}
-                    }
-                },
-                frame = socket.next() => match frame {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        let samples: Vec<i16> = bytes.chunks_exact(2).map(|b|i16::from_le_bytes([b[0],b[1]])).collect();
-                        if samples.iter().any(|s| s.abs() > 500) && (frequency(&samples,16000)-660.0).abs() < 100.0 {
-                            received.fetch_add(1, Ordering::SeqCst);
+                        let pcm: Vec<u8> = tone(440.0, 16000, position).into_iter().flat_map(i16::to_le_bytes).collect();
+                        position += 320;
+                        if socket.send(Message::Binary(pcm.into())).await.is_err() { break; }
+                        if phase==0 && (position == 8000 || position == 16000) {
+                            let kind = if position == 8000 {"partial"} else {"final"};
+                            let speech = json!({"type":"speech-update","role":"user","status":if position==8000 {"started"} else {"stopped"},"turn":1});
+                            if socket.send(Message::Text(speech.to_string().into())).await.is_err() {break;}
+                            let transcript = json!({"type":"transcript","role":"user","transcriptType":kind,"transcript":"Yes, Jonathan can shorten his talk."});
+                            if socket.send(Message::Text(transcript.to_string().into())).await.is_err() {break;}
                         }
                     },
-                    Some(Ok(Message::Text(text))) if text.contains("end-call") => {
-                        let _ = socket.send(Message::Text(r#"{"type":"status-update","status":"ended"}"#.into())).await;
-                        break;
-                    },
-                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    _=>{}
+                    frame = socket.next() => match frame {
+                        Some(Ok(Message::Binary(bytes))) => {
+                            let samples: Vec<i16> = bytes.chunks_exact(2).map(|b|i16::from_le_bytes([b[0],b[1]])).collect();
+                            if samples.iter().any(|s| s.abs() > 500) && (frequency(&samples,16000)-660.0).abs() < 100.0 {
+                                received.fetch_add(1, Ordering::SeqCst);
+                            }
+                            if samples.iter().any(|s| s.abs() > 500) && (frequency(&samples,16000)-880.0).abs() < 70.0 { owner_frames.fetch_add(1,Ordering::SeqCst); }
+                        },
+                        Some(Ok(Message::Text(text))) if text.contains("got a flight for you") => {
+                            assistant_tone.store(true,Ordering::SeqCst);
+                            provider_bursts.store(false,Ordering::SeqCst);
+                        },
+                        Some(Ok(Message::Text(text))) if text.contains("end-call") => {
+                            let _ = socket.send(Message::Text(r#"{"type":"status-update","status":"ended"}"#.into())).await;
+                            break;
+                        },
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                        _=>{}
+                    }
                 }
             }
         }
@@ -106,12 +128,12 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
         let router = axum::Router::new().route(
             "/call",
             axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
-                count.fetch_add(1, Ordering::SeqCst);
+                let call_index=count.fetch_add(1, Ordering::SeqCst);
                 let ws_url = ws_url.clone();
                 async move {
                     assert!(body.get("assistantId").is_none());
                     assert_eq!(body["assistant"]["name"], "Parley conference David");
-                    axum::Json(json!({"id":"fixture-call","transport":{"websocketCallUrl":ws_url}}))
+                    axum::Json(json!({"id":format!("fixture-call-{call_index}"),"transport":{"websocketCallUrl":ws_url}}))
                 }
             }),
         );
@@ -146,6 +168,8 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     let ai_frames = ai_audio.clone();
     let human_audio = Arc::new(AtomicUsize::new(0));
     let human_frames = human_audio.clone();
+    let received_rtp = Arc::new(AtomicUsize::new(0));
+    let rtp_counter = received_rtp.clone();
     let (hangup_tx, mut hangup_rx) = tokio::sync::oneshot::channel::<()>();
     let remote = tokio::spawn(async move {
         let call = endpoint
@@ -187,6 +211,7 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
                     }
                 },
                 frame=recv.recv()=>if let Some(frame)=frame {
+                    rtp_counter.fetch_add(1,Ordering::SeqCst);
                     let (first_at, first_ts) = *first_received.get_or_insert((std::time::Instant::now(), frame.timestamp));
                     if !first_human_received && (frequency(&frame.samples,frame.sample_rate)-880.0).abs()<80.0 {
                         first_human_received = true;
@@ -316,6 +341,11 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
         .store
         .issue_conference_token("ten_local", &cid, &members[0].participant_id)
         .unwrap();
+    let assistant_token = app
+        .state
+        .store
+        .issue_conference_token("ten_local", &cid, &members[4].participant_id)
+        .unwrap();
     let web_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let web_url = format!("http://{}", web_listener.local_addr().unwrap());
     let retained = rvoip_core::ids::ConnectionId::from_string(&connid);
@@ -330,9 +360,14 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
             "ai_frames":observed_ai.load(Ordering::SeqCst),
             "human_frames":observed_human.load(Ordering::SeqCst),
             "provider_frames":observed_provider.load(Ordering::SeqCst),
+            "owner_frames":owner_received.load(Ordering::SeqCst),
             "bursts_sent":bursts_sent.load(Ordering::SeqCst),
+            "rtp_frames":received_rtp.load(Ordering::SeqCst),
         });
         async move {axum::Json(result)}
+    })).route("/__owner_reply",axum::routing::post(move |axum::Json(body):axum::Json<Value>| {
+        control_tx.send(body["text"].as_str().unwrap().to_string()).unwrap();
+        async { axum::http::StatusCode::NO_CONTENT }
     })).route("/__burst_assistant", axum::routing::post(move || {
         burst_mode.store(true, Ordering::SeqCst);
         async { axum::http::StatusCode::NO_CONTENT }
@@ -344,14 +379,15 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
         axum::serve(web_listener, router).await.unwrap();
     });
     let output = tokio::time::timeout(
-        Duration::from_secs(75),
+        Duration::from_secs(120),
         tokio::process::Command::new("node")
             .arg("e2e/conference-media.mjs")
             .env(
                 "MEDIA_FIXTURE",
-                json!({"http":web_url,"url":url.as_str(),"cid":cid,"sid":sid,"token":token})
+                json!({"http":web_url,"url":url.as_str(),"cid":cid,"sid":sid,"token":token,"assistant_token":assistant_token,"owner":members[0].participant_id})
                     .to_string(),
             )
+            .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true)
             .output(),
     )
@@ -375,8 +411,8 @@ async fn chrome_sip_handoff_preserves_call_and_bidirectional_audio() {
     );
     assert_eq!(
         call_count.load(Ordering::SeqCst),
-        1,
-        "Vapi call must not be restarted"
+        2,
+        "private David has initial phase instructions; the organizer SIP call is retained"
     );
     let remote_id = rvoip_core::ids::ConnectionId::from_string(&connid);
     assert_eq!(

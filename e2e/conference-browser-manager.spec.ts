@@ -72,7 +72,7 @@ test('password sign-in connects the browser and enables new conversations withou
     await page.getByRole('button', { name: 'New conversation', exact: true }).click();
     await expect(page.locator('#status')).toContainText('SMS fixture');
     await expect(page.locator('#notice')).toHaveText('');
-    await expect(page.getByRole('button', { name: 'Start coordinating', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Call David · Start demo', exact: true })).toBeEnabled();
     await expect(page.getByRole('button', { name: 'Browser connected', exact: true })).toBeVisible();
     const first = new URL(page.url()).searchParams.get('cid')!;
     expect(manager.state.current.participants.find(p => p.role === 'owner').sms).toBe('+14155550100');
@@ -96,7 +96,7 @@ test('password sign-in connects the browser and enables new conversations withou
     await expect.poll(() => new URL(page.url()).searchParams.get('cid')).not.toBe(first);
     const second = new URL(page.url()).searchParams.get('cid')!;
     expect(manager.state.current.cid).toBe(second);
-    await expect(page.getByRole('button', { name: 'Start coordinating', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Call David · Start demo', exact: true })).toBeEnabled();
     await expect(page.locator('#people .person')).toHaveCount(4);
     await expect(page.locator('#conversation-list option')).toHaveCount(2);
     await page.getByRole('button', { name: 'Setup & settings', exact: true }).click();

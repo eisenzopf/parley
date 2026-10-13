@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { ConversationProjection, stageText } from './projection.mjs';
 const members = ['owner', 'companion', 'booker', 'organizer', 'assistant'].map(role => ({ participant_id: role, role, name: role }));
 function fixture() {
-  const model = new ConversationProjection('conv_test', members); let seq = 0;
-  return { model, add: (event_type, payload) => { const e = { cid: 'conv_test', seq: ++seq, event_type, payload }; model.apply(e); return e; } };
+  const model = new ConversationProjection('conv_test', members); let seq = 0; const journal = [];
+  return { model, journal, add: (event_type, payload) => { const e = { cid: 'conv_test', seq: ++seq, event_type, payload }; model.apply(e); journal.push(e); return e; } };
 }
 const edge = (model, id) => model.network(true, 'fake').edges.find(e => e.id === id);
 
@@ -132,4 +132,41 @@ test('mixed final updates preserve chat acceptance separately from carrier deliv
   assert.equal(updates.find(u => u.member.role === 'owner').delivery.state, 'delivered');
   assert.ok(updates.find(u => u.member.role === 'booker').chat);
   assert.equal(updates.find(u => u.member.role === 'booker').delivery, undefined);
+});
+test('people remain fixed through private consultation and a confirmed phone move', () => {
+  const { model, add, journal } = fixture();
+  const actors = () => model.scene().cards.map(c => c.id);
+  const owner = () => model.scene().cards.find(c => c.id === 'owner');
+  const original = actors();
+  add('session.invited', { sid: 's', connid: 'jeff-phone', participant_id: 'organizer' });
+  add('connection.connected', { sid: 's', connid: 'jeff-phone', state: 'connected' });
+  add('session.assistant_attached', { sid: 's', connid: 'david', participant_id: 'assistant' });
+  add('browser.consulting', { sid: 's', connid: 'browser', state: 'consulting', details: { held_connid: 'jeff-phone' } });
+  assert.deepEqual(actors(), original);
+  assert.equal(model.scene().cards.find(c => c.id === 'organizer').status, 'On hold');
+  assert.equal(model.scene().links.find(l => l.id === 'assistant-organizer').state, 'held');
+  assert.equal(model.scene().links.find(l => l.id === 'owner-assistant').label, 'WebRTC · private');
+  add('browser.speaking', { sid: 's', connid: 'browser', state: 'speaking', details: { retained_connid: 'jeff-phone' } });
+  assert.equal(model.scene().cards.find(c => c.id === 'assistant').status, 'Handoff complete');
+  assert.equal(model.scene().links[0].label, 'WebRTC ↔ Phone');
+  add('phone.dialing', { sid: 's', connid: 'callback', state: 'dialing' });
+  assert.equal(owner().device, 'Browser');
+  assert.equal(owner().pending, 'Mobile ringing…');
+  add('phone.answered', { sid: 's', connid: 'callback', state: 'answered' });
+  assert.equal(owner().device, 'Browser');
+  assert.match(owner().pending, /answered.*connecting/);
+  add('phone.failed', { sid: 's', connid: 'callback', state: 'failed' });
+  assert.equal(owner().device, 'Browser');
+  assert.equal(model.scene().links[0].label, 'WebRTC ↔ Phone');
+  add('phone.speaking', { sid: 's', connid: 'callback2', state: 'speaking', details: { retained_connid: 'jeff-phone', retired_connid: 'browser', join_confirmed: true } });
+  assert.equal(owner().device, 'Mobile');
+  assert.equal(model.scene().links[0].label, 'Phone ↔ Phone');
+  assert.deepEqual(actors(), original);
+  assert.ok(model.milestones.some(m => m.label === 'David checks with Jonathan'));
+  const replay = new ConversationProjection(model.cid, [...model.members.values()]);
+  const privateSeq = model.milestones.find(m => m.label === 'David checks with Jonathan').seq;
+  for (const event of journal.filter(e => e.seq <= privateSeq)) replay.apply(event);
+  assert.equal(replay.scene().cards.find(c => c.id === 'owner').device, 'Browser');
+  assert.equal(replay.scene().cards.find(c => c.id === 'organizer').status, 'On hold');
+  assert.equal(model.scene().cards.find(c => c.id === 'owner').device, 'Mobile', 'replay cannot change the live projection');
 });

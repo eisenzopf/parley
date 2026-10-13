@@ -1,3 +1,35 @@
+## Opening call and private David consultation — October 13, 2026
+
+The Start button calls David from Jonathan’s browser. David opens with “Jonathan,
+are you on your flight?” After Jonathan says he missed it, David says “Again? Okay,
+let me see what I can do. I’ll call you back.” The worker waits for this closing and
+the ended Session before dialing the booker. An abandoned or failed opening call
+does not initiate telephone work. Browser controls appear during the opening call,
+then disappear until David’s later invitation.
+
+The organizer stays connected and receives silent G.711 RTP while Jonathan answers
+David privately in WebRTC. A current affirmative owner transcript and David's
+`connect_organizer` action are both required before replacing David with Jeff.
+Answering alone does not transfer Jeff. The private phase initializes a fresh
+Vapi voice session because Realtime instructions are applied at initialization;
+Jeff’s original SIP connection and the Parley Session stay the same. After the opening call, the panel appears when David’s
+invitation arrives; mobile move appears after Jeff is connected. Existing confirmed
+browser-to-phone handoff retains Jeff's telephone connection and switches automatically
+once the mobile is answered and its audio is ready.
+
+Full mode waits for an attributed affirmative SMS after David's “Can I call you?”
+message. Booking prompts collect only airline, flight number, departure and arrival;
+David speaks casually, avoids final readback loops and makes no pickup requests.
+The transient Vapi assistant is **Parley conference David**, with OpenAI
+**gpt-realtime-2** and **cedar**. It is supplied per call, not a saved dashboard assistant.
+
+Validation uses local Vapi/SMS fixtures with real Chrome, SIP, RTP and WebRTC.
+It checks private audio isolation, negative consent, affirmative transfer, a 23-second
+hold with continuing RTP, callback cancellation, automatic transfer on answer, and two-way
+mobile audio. A synthetic live-provider test verifies the opening exchange using GPT Realtime 2
+and Cedar, with no PSTN calls or SMS. Tool start messages are explicitly empty
+to suppress Vapi’s default fillers. Final delivery still requires rehearsal with the participants.
+
 ## Configurable phones and focused browser UI — October 12, 2026
 
 Password-authenticated Setup & settings now saves the owner, booker, and organizer phone numbers. New conversations snapshot the saved roster; existing conversations and pending creation retries retain their original destinations. Owner and organizer changes update both SIP and SMS, while booker changes update SIP. Server-provisioned carrier routing and existing SMS enrollment admission remain in force. Saving settings never places calls or sends messages.

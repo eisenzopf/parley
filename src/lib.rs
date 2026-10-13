@@ -2,10 +2,12 @@
 
 pub mod auth;
 pub mod cloudflare_tunnel;
+#[cfg(all(feature = "media-webrtc", feature = "vapi"))]
+pub mod conference_consult;
 pub mod conference_network;
-pub mod conference_voice;
 pub mod conference_phone;
 mod conference_phone_prompt;
+pub mod conference_voice;
 pub mod config;
 pub mod conversation;
 pub mod error;

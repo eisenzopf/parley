@@ -186,6 +186,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
             .as_str()
             .unwrap()
             .to_owned(),
+        "Yes, go ahead.".to_string(),
     ];
     let audio_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let audio_url = format!("ws://{}/audio", audio_listener.local_addr().unwrap());
@@ -197,7 +198,10 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
         std::env::var("CONFERENCE_MISSING_HANDOFF_TOOL").as_deref() == Ok("1");
     let provider = tokio::spawn(async move {
         let mut calls = vec![];
-        for (index, transcript) in transcripts.into_iter().enumerate() {
+        for (index, transcript) in
+            std::iter::once((3, "Yeah, about that. I missed my flight.".to_string()))
+                .chain(transcripts.into_iter().enumerate())
+        {
             let (tcp, _) = audio_listener.accept().await.unwrap();
             let counts = provider_observed.clone();
             let announcements = announcement_observed.clone();
@@ -205,6 +209,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 let mut ws=tokio_tungstenite::accept_async(tcp).await.unwrap();
                 let mut tick=tokio::time::interval(Duration::from_millis(20));let mut position=0;
                 let mut announcement_stop = None;
+                let mut owner_reply_at = None;
                 loop {
                     tokio::select! {
                         _=tick.tick()=>{
@@ -212,32 +217,48 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                             if ws.send(Message::Binary(pcm.into())).await.is_err(){break;}
                             if position==16000 {
                                 if ws.send(Message::Text(json!({"type":"transcript","role":"user","transcriptType":"final","transcript":transcript}).to_string().into())).await.is_err(){break;}
-                                if index==1 {
+                                if index==2 {
+                                    if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-connect-jeff","function":{"name":"connect_organizer","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
+                                } else if index==1 {
                                     if missing_handoff_tool {
                                         if ws.send(Message::Text(json!({"type":"transcript","role":"assistant","transcriptType":"final","transcript":"Thank you for confirming pickup. I'll bring Jonathan into the call now."}).to_string().into())).await.is_err(){break;}
                                     } else if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-browser-join","function":{"name":"request_browser_join","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
+                                } else if index==0 {
+                                    if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-finish-booking","function":{"name":"finish_booking","arguments":{"airline":"American Airlines","flight_number":"AA 123","departure_time":"11 AM","arrival_time":"4 PM"}}}]}).to_string().into())).await.is_err(){break;}
                                 } else {
                                     if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-finish-call","function":{"name":"finish_call","arguments":"{\"reason\":\"completed\"}"}}]}).to_string().into())).await.is_err(){break;}
                                 }
                             }
+                            if owner_reply_at == Some(position) {
+                                if ws.send(Message::Text(json!({"type":"transcript","role":"user","transcriptType":"final","transcript":"Yes, go ahead."}).to_string().into())).await.is_err(){break;}
+                                if ws.send(Message::Text(json!({"type":"tool-calls","toolCallList":[{"id":"fixture-connect-jeff","function":{"name":"connect_organizer","arguments":"{}"}}]}).to_string().into())).await.is_err(){break;}
+                                owner_reply_at=None;
+                            }
                             if announcement_stop == Some(position) {
                                 if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"stopped"}).to_string().into())).await.is_err(){break;}
                                 announcement_stop = None;
+                                if index<2 {
+                                    let _=ws.send(Message::Text(json!({"type":"status-update","status":"ended"}).to_string().into())).await;
+                                    let _=ws.close(None).await;
+                                    break;
+                                }
                             }
                         },
                         frame=ws.next()=>match frame {
                             Some(Ok(Message::Binary(bytes)))=>{
                                 let samples:Vec<i16>=bytes.chunks_exact(2).map(|s|i16::from_le_bytes([s[0],s[1]])).collect();
-                                if samples.iter().any(|s|s.abs()>500) && (frequency(&samples,16000)-660.0).abs()<100.0 {counts[index].fetch_add(1,Ordering::SeqCst);}
+                                if index<2 && samples.iter().any(|s|s.abs()>500) && (frequency(&samples,16000)-660.0).abs()<100.0 {counts[index].fetch_add(1,Ordering::SeqCst);}
                             },
                             Some(Ok(Message::Text(text))) if text.contains("end-call")=>{let _=ws.send(Message::Text(r#"{"type":"status-update","status":"ended"}"#.into())).await;break;},
                             Some(Ok(Message::Text(text)))=>{
                                 let command:Value=serde_json::from_str(&text).unwrap();
-                                if command["type"] == "say" {
-                                    assert_eq!(command["content"], if index==0 {"Thank you for your help. Goodbye."} else {"One moment while I bring Jonathan into the conversation."});
-                                    assert_eq!(command["endCallAfterSpoken"], false, "UCTP owns teardown");
+                                if command["type"] == "say" && command["content"].as_str().is_some_and(|s|s.contains("got a flight for you")) {
+                                    owner_reply_at=Some(position+32000);
+                                } else if command["type"] == "say" {
+                                    assert_eq!(command["content"], if index==3 {"Again? Okay, let me see what I can do. I'll call you back."} else if index==0 {"Thanks for your help! Bye."} else {"Ha! Hold on, let me get Jonathan on the line so you can tell him that."});
+                                    assert_eq!(command["endCallAfterSpoken"], index<2, "each public voice phase ends after its closing announcement");
                                     assert_eq!(command["interruptAssistantEnabled"], false, "finish the preceding confirmation");
-                                    assert_eq!(announcements[index].fetch_add(1,Ordering::SeqCst),0,"announce once");
+                                    if index<2 {assert_eq!(announcements[index].fetch_add(1,Ordering::SeqCst),0,"announce once");}
                                     if ws.send(Message::Text(json!({"type":"speech-update","role":"assistant","status":"started"}).to_string().into())).await.is_err(){break;}
                                     if ws.send(Message::Text(json!({"type":"transcript","role":"assistant","transcriptType":"final","transcript":command["content"]}).to_string().into())).await.is_err(){break;}
                                     announcement_stop = Some(position + 16000);
@@ -265,6 +286,18 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 assert!(body.get("assistantId").is_none());
                 assert!(body.get("assistantOverrides").is_none());
                 assert!(body["assistant"].get("server").is_none());
+                if n==0 {
+                    assert_eq!(body["assistant"]["firstMessage"],"Jonathan, are you on your flight?");
+                    assert!(body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap().contains("Opening call from Jonathan"));
+                    return axum::Json(json!({"id":"fixture-opening-call","transport":{"websocketCallUrl":audio_url}}));
+                }
+                let n=n-1;
+                if n==2 {
+                    assert_eq!(body["metadata"]["voice_profile"],"conference-consult/1");
+                    assert!(body["assistant"]["firstMessage"].as_str().unwrap().contains("got a flight for you"));
+                    assert_eq!(body["assistant"]["model"]["tools"][0]["function"]["name"],"connect_organizer");
+                    return axum::Json(json!({"id":"fixture-consult-call","transport":{"websocketCallUrl":audio_url}}));
+                }
                 assert_eq!(body["metadata"]["voice_profile"],"conference-voice/3");
                 assert_eq!(body["assistant"]["firstMessage"], "Hi, this is David calling for Jonathan. Is now a good time?");
                 assert!(body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap().contains("You are David, Jonathan's AI"));
@@ -276,10 +309,10 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 assert_eq!(body["assistant"]["maxDurationSeconds"], 600);
                 let prompt = body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap();
                 if n == 0 {
-                    assert!(prompt.contains("When the reservationist says goodbye"));
+                    assert!(prompt.contains("If the booking agent says goodbye"));
                     assert_eq!(body["assistant"]["model"]["tools"][0]["function"]["name"], "finish_call");
                 } else {
-                    assert!(prompt.contains("invoke request_browser_join exactly once"));
+                    assert!(prompt.contains("Invoke request_browser_join exactly once"));
                     assert_eq!(body["assistant"]["model"]["tools"][0]["function"]["name"],"request_browser_join");
                     assert_eq!(body["assistant"]["model"]["tools"][0]["async"],false);
                     assert!(body["assistant"]["model"]["tools"][0]["server"]["url"].as_str().unwrap().contains("/v1/vapi/conference-tools/"));
@@ -287,7 +320,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 }
                 let finish = body["assistant"]["model"]["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "finish_call").unwrap();
                 assert_eq!(finish["async"], false);
-                assert_eq!(finish["messages"], json!([]), "the coordinator queues exact announcement audio");
+                assert_eq!(finish["messages"], json!([{"type":"request-start","content":""}]), "the coordinator queues exact announcement audio");
                 assert!(finish["server"]["url"].as_str().unwrap().contains("/v1/vapi/conference-tools/"), "webhook only acknowledges; UCTP executes call termination");
                 assert!(prompt.contains("ask once whether they can connect you"));
                 assert!(n<2,"no duplicate provider calls");
@@ -383,14 +416,15 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
     let phone_remote = phone.remote_audio.clone();
     let phone_pending_audio = phone.pending_audio.clone();
     let phone_pending_frames = phone.pending_frames.clone();
-    let digits = phone.digits.clone();
+    let phone_ringing = phone.ringing.clone();
+    let answer = phone.answer.clone();
     let router=app.router().route("/__scenario_fixture",axum::routing::get(move || {
-        let value=json!({"ai_frames":observed.ai_audio.load(Ordering::SeqCst),"human_frames":observed.browser_audio.load(Ordering::SeqCst),"phone_frames":observed.phone_audio.load(Ordering::SeqCst),"owner_received_frames":phone_remote.load(Ordering::SeqCst),"phone_pending_audio":phone_pending_audio.load(Ordering::SeqCst),"phone_pending_frames":phone_pending_frames.load(Ordering::SeqCst),"phone_answered":phone_answered.load(Ordering::SeqCst),"phone_ended":phone_ended.load(Ordering::SeqCst),"ended":observed.ended.load(Ordering::SeqCst),"speech_sent":observed.speech_sent.load(Ordering::SeqCst)});
+        let value=json!({"ai_frames":observed.ai_audio.load(Ordering::SeqCst),"human_frames":observed.browser_audio.load(Ordering::SeqCst),"phone_frames":observed.phone_audio.load(Ordering::SeqCst),"owner_received_frames":phone_remote.load(Ordering::SeqCst),"phone_pending_audio":phone_pending_audio.load(Ordering::SeqCst),"phone_pending_frames":phone_pending_frames.load(Ordering::SeqCst),"phone_ringing":phone_ringing.load(Ordering::SeqCst),"phone_answered":phone_answered.load(Ordering::SeqCst),"phone_ended":phone_ended.load(Ordering::SeqCst),"ended":observed.ended.load(Ordering::SeqCst),"speech_sent":observed.speech_sent.load(Ordering::SeqCst)});
         async move {axum::Json(value)}
     })).route("/__scenario_tone",axum::routing::post(move || {
         let tones=tones.clone();async move {tones.tone_mode.store(true,Ordering::SeqCst);axum::Json(json!({"synthetic_tone":true}))}
-    })).route("/__scenario_phone_digit",axum::routing::post(move |axum::Json(body):axum::Json<Value>| {
-        let digits=digits.clone();async move {let digit=body["digit"].as_str().unwrap().chars().next().unwrap();digits.send(digit).await.unwrap();axum::Json(json!({"fixture_digit_sent":true}))}
+    })).route("/__scenario_phone_answer",axum::routing::post(move || {
+        let answer=answer.clone();async move {answer.send(()).await.unwrap();axum::Json(json!({"fixture_phone_answered":true}))}
     }));
     let web = tokio::spawn(async move {
         axum::serve(http, router).await.unwrap();
@@ -402,7 +436,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
     };
     let output=tokio::time::timeout(Duration::from_secs(scenario_timeout),tokio::process::Command::new("node").arg("e2e/conference-scenario.mjs")
         .env("CONFERENCE_SCENARIO_FIXTURE",json!({"http":http_url,"url":url.as_str(),"cid":cid,"owner_token":owner_token,"assistant_token":assistant_token,"worker_state":dir.path().join("worker.json"),"scenario":scenario,"live_voice":live_voice}).to_string())
-        .kill_on_drop(true).output()).await;
+        .stderr(std::process::Stdio::inherit()).kill_on_drop(true).output()).await;
     // A failed browser/model gate must still retire any real provider calls.
     if live_voice {
         let mut owner = member_peer(&app, &url, &cid, &members[0]).await;
@@ -462,7 +496,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
         .unwrap();
     assert_eq!(
         phone.answered.load(Ordering::SeqCst),
-        2,
+        1,
         "cancelled + successful callback, no duplicates"
     );
     assert_eq!(
@@ -494,7 +528,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
         assert!(provider_received
             .iter()
             .all(|count| count.load(Ordering::SeqCst) > 10));
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(call_count.load(Ordering::SeqCst), 4);
         assert_eq!(
             announcements[0].load(Ordering::SeqCst),
             1,
@@ -507,7 +541,7 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
         );
     }
     let sessions = app.state.store.list_sessions("ten_local", &cid).unwrap();
-    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions.len(), 3);
     assert!(sessions.iter().all(|s| s.state == "ended"));
     assert_eq!(
         app.state

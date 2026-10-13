@@ -440,8 +440,13 @@ and [number assignment status](https://support.telnyx.com/en/articles/11072276-1
 
 The server requires `PARLEY_SMS_ENROLLMENT_PATH` and `PARLEY_SMS_CAMPAIGN_ID`
 for live SMS. The enrollment file is private, readable only by the service and
-operators. It is an operator-reviewed record of public-form enrollment, not a
-replacement signup method and not proof that the form database was queried.
+operators. It records enrollment confirmed by the operator or authenticated
+demo owner; it is not proof that the public form database was queried.
+The demo owner has confirmed enrollment for the numbers entered in setup.
+Saving those numbers synchronizes their enrollment records before conversation
+creation, so a new destination does not need a second manual file update.
+Retrying a pending creation also synchronizes numbers saved by older versions.
+Existing withdrawals and carrier STOP blocks are not cleared by saving setup.
 Record the real source and evidence; never fabricate a form timestamp. Its shape is:
 
 ```json
@@ -586,12 +591,11 @@ recordings and transcripts before sharing.
 
 For the two-owned-phone test, provision `phone` as the remote phone and
 `callback_phone` as Jonathan's callback. After recording browser return audio,
-the harness selects **Move to my phone**. Answer the second phone and press
-**1** within 45 seconds. The first phone remains on its original call. After the
-callback answers, a synthetic voice asks the holder to press 1 and repeats while
-waiting. Actual negotiated G.711 silence fills the gaps to keep RTP flowing.
-The server stops the prompt before replacing the browser's speaking route.
-Answering or hearing the prompt alone never commits a move. After the
+the harness selects **Move to my phone**. Answer the second phone within 45
+seconds. The first phone remains on its original call. Once the callback answers
+and bidirectional phone audio is ready, the server replaces the browser's speaking
+route automatically and disconnects the browser. No keypad confirmation or spoken
+prompt is required. Until the move commits, browser audio stays connected. After the
 committed move, speak **green lantern** on one phone and **silver mountain** on
 the other during the 65-second live listening window. Keep both calls open until
 the harness ends them; both telephone edges must remain active past the old

@@ -255,7 +255,7 @@ test('an ended failed organizer call cannot become an approved pickup or complet
     assert.throws(() => worker.prepare(complete), /Voice rehearsal requires/);
   }
   worker.state.events = [...valid, { event_type: 'session.assistant_failed', payload: { sid: 'ses_confirm' } }];
-  assert.throws(() => worker.prepare(proposal), /failed call does not confirm pickup/);
+  assert.throws(() => worker.prepare(proposal), /failed call does not establish a schedule agreement/);
   worker.members.push({ role: 'booker', participant_id: 'booker' });
   worker.state.events = [...valid,
     { event_type: 'session.invited', payload: { sid: 'ses_booker', participant_id: 'booker' } },
@@ -644,7 +644,7 @@ test('booker facts do not let the planner skip confirmation and closing or start
   f.events[3].payload.state = 'stopped'; f.events[4].payload.state = 'stopped';
   const worker = new ConferenceWorker(f.options); await worker.step(); f.setNow(12000); await worker.step();
   assert.equal(f.plans(), 0); assert.equal(f.sent.length, 0);
-  assert.throws(() => worker.prepare({ actions: [{ type: 'end_voice', sid: 'sess_call' }] }), /confirmation and closing/);
+  assert.throws(() => worker.prepare({ actions: [{ type: 'end_voice', sid: 'sess_call' }] }), /finish its closing/);
   f.add('session.assistant_action', { source: 'vapi', participant_id: 'ai', action: 'finish_call', reason: 'completed' });
   f.add('session.speech', { speaker: 'ai', state: 'started' }); await worker.step();
   f.add('session.speech', { speaker: 'ai', state: 'stopped' }); await worker.step();
@@ -781,7 +781,7 @@ test('organizer failure does not trigger the automatic booker retry policy', asy
   await new ConferenceWorker(f.options).step(); assert.equal(f.sent.length, 0); assert.equal(f.plans(), 1);
 });
 
-function missingBrowserToolFixture({ confirmation = 'I can pick them up at the curb.', announcement = "I'll bring Jonathan into the call now." } = {}) {
+function missingBrowserToolFixture({ confirmation = 'Can Jonathan cut his presentation thirty minutes short?', announcement = "I'll bring Jonathan into the call now." } = {}) {
   let now = 10000, saved = { cursor: 0, events: [], pending: null }, plans = 0;
   const sent = [], events = [
     { seq: 1, event_type: 'session.invited', payload: { sid: 'organizer_call', participant_id: 'organizer', connid: 'organizer_connection' } },
@@ -798,7 +798,7 @@ function missingBrowserToolFixture({ confirmation = 'I can pick them up at the c
     request: async frame => { sent.push(frame); events.push({ seq: events.length + 1, event_type: 'message.accepted', payload: { ...frame.payload, from: 'ai' } }); return { type: 'ack' }; } },
     storage: { load: async () => structuredClone(saved), save: async state => { saved = structuredClone(state); } },
     planner: { decide: async context => { plans++; assert.equal(context.browser_handoff_pending.sid, 'organizer_call');
-      return { actions: confirmation === 'I can pick them up at the curb.' ? [{ type: 'request_browser_join', sid: 'organizer_call' }] : [] }; } } };
+      return { actions: confirmation === 'Can Jonathan cut his presentation thirty minutes short?' ? [{ type: 'request_browser_join', sid: 'organizer_call' }] : [] }; } } };
   return { options, events, sent, plans: () => plans, setNow: value => { now = value; },
     stopSpeech: () => events.push({ seq: events.length + 1, event_type: 'session.speech', payload: { sid: 'organizer_call', speaker: 'ai', state: 'stopped' } }) };
 }
@@ -814,8 +814,17 @@ test('spoken handoff without a tool wakes the planner after acknowledgement and 
   assert.equal(f.sent.length, 1, 'replayed announcement cannot ring twice');
 });
 
+test('presentation question and casual get-him-on-the-line announcement recover the same call without pickup', async () => {
+  const f = missingBrowserToolFixture({ announcement: 'Ha! Hold on, let me get him on the line so you can tell him that.' });
+  const worker = new ConferenceWorker(f.options);
+  await worker.step(); f.stopSpeech(); await worker.step(); f.setNow(11500); await worker.step();
+  assert.equal(f.plans(), 1); assert.equal(f.sent.length, 1);
+  assert.equal(JSON.parse(f.sent[0].payload.body).sid, 'organizer_call');
+  assert.equal(JSON.parse(f.sent[0].payload.body).retained_connid, 'organizer_connection');
+});
+
 test('queued organizer announcement finishes before ringing and survives a worker restart', async () => {
-  const f = missingBrowserToolFixture({ announcement: 'One moment while I bring Jonathan into the conversation.' });
+  const f = missingBrowserToolFixture({ announcement: 'Ha! Hold on, let me get Jonathan on the line so you can tell him that.' });
   f.events[4].payload.state = 'stopped';
   f.events.push({ seq: 7, event_type: 'session.assistant_action', payload: { sid: 'organizer_call', source: 'vapi',
     participant_id: 'ai', action: 'request_browser_join', announcement_queued: true } });
@@ -830,7 +839,19 @@ test('queued organizer announcement finishes before ringing and survives a worke
   assert.equal(JSON.parse(f.sent[0].payload.body).sid, 'organizer_call'); assert.equal(f.plans(), 0);
 });
 
-test('a spoken announcement cannot replace pickup confirmation or ring from a greeting', async () => {
+test('new organizer handoffs wait for real hold before ringing the browser', async () => {
+  const f = missingBrowserToolFixture({ announcement: 'Ha! Hold on, let me get Jonathan on the line so you can tell him that.' });
+  f.events.push({ seq: 7, event_type: 'session.assistant_action', payload: { sid: 'organizer_call', source: 'vapi', participant_id: 'ai', action: 'request_browser_join', announcement_queued: true, hold_before_invitation: true } });
+  const worker = new ConferenceWorker(f.options);
+  await worker.step(); f.stopSpeech(); f.setNow(40000); await worker.step(); f.setNow(42000); await worker.step();
+  assert.equal(f.sent.length, 0, 'announcement timeout cannot replace actual hold');
+  f.events.push({ seq: f.events.length + 1, event_type: 'session.organizer_held', payload: { sid: 'organizer_call', connid: 'organizer_connection' } });
+  await worker.step();
+  assert.equal(f.sent.length, 1);
+  assert.equal(JSON.parse(f.sent[0].payload.body).type, 'travel.browser_invitation');
+});
+
+test('a spoken announcement cannot replace an organizer question for Jonathan or ring from a greeting', async () => {
   for (const data of [{ confirmation: 'Hello, who is calling?' }, { announcement: "Hello, I'm David." }, { announcement: 'I will not bring Jonathan into the call.' }]) {
     const f = missingBrowserToolFixture(data), worker = new ConferenceWorker(f.options);
     await worker.step(); f.stopSpeech(); await worker.step(); f.setNow(11500); await worker.step();
@@ -860,4 +881,77 @@ test('managed fresh conversations ignore late SMS until the owner starts a task'
   await worker.step(); assert.equal(sent.length, 0);
   events.push({ seq: 2, event_type: 'message.accepted', payload: { from: 'owner', to: ['ai'], content_type: 'text/plain', body: 'Start coordinating' } });
   await worker.step(); assert.equal(sent.length, 1);
+});
+
+test('private consultation requires the owner latest yes and a Vapi transfer action; reconnect does not repeat it', () => {
+  const worker = new ConferenceWorker({cid:'c', client:{command:(type,cid,payload,extra)=>({type,cid,payload,...extra})}, storage:{}, planner:{}});
+  worker.members=[{role:'owner',participant_id:'owner'},{role:'organizer',participant_id:'jeff'}];
+  worker.self={participant_id:'david'};
+  worker.state={events:[],cursor:0};
+  const event=(type,payload)=>worker.state.events.push({seq:worker.state.events.length+1,event_type:type,payload:{sid:'s',...payload}});
+  event('session.transcript',{speaker:'owner',is_final:true,text:'Yes'});
+  event('browser.consulting',{});
+  event('session.transcript',{speaker:'jeff',is_final:true,text:'Yes'});
+  event('session.assistant_action',{participant_id:'david',source:'vapi',action:'connect_organizer'});
+  assert.equal(worker.consultTransfer().ready,false,'old owner consent and Jeff cannot authorize transfer');
+  event('session.transcript',{speaker:'owner',is_final:true,text:'No, wait'});
+  assert.throws(()=>worker.prepare({actions:[{type:'connect_organizer',sid:'s'}]}),/explicit yes/);
+  event('session.transcript',{speaker:'owner',is_final:true,text:'Yes, go ahead'});
+  assert.equal(worker.consultTransfer().ready,true);
+  assert.equal(worker.prepare({actions:[{type:'connect_organizer',sid:'s'}]}).requests[0].payload.kind,'connect_organizer');
+  worker.state.connectedConsults={s:{request_id:'once'}};
+  assert.equal(worker.consultTransfer().ready,false);
+  delete worker.state.connectedConsults;
+  event('session.transcript',{speaker:'owner',is_final:true,text:'Actually wait'});
+  assert.equal(worker.consultTransfer().ready,false);
+  event('session.ended',{});
+  assert.equal(worker.consultTransfer(),null);
+});
+
+test('full flow requires Jeff affirmative SMS after the call invitation, and honors a later no', () => {
+  const worker=new ConferenceWorker({cid:'c',client:{},storage:{},planner:{}});
+  worker.members=[{role:'organizer',participant_id:'jeff'}];worker.self={participant_id:'david'};worker.state={events:[]};
+  const add=(event_type,payload)=>worker.state.events.push({seq:worker.state.events.length+1,event_type,payload});
+  add('message.received',{from:'jeff',delivery:'sms',body:'Yes'});
+  assert.equal(worker.organizerCallPermission(),false);
+  add('message.accepted',{from:'david',to:['jeff'],delivery:'sms',body:'Hey Jeff, good news. I got Jonathan and Andrew a flight. Can I call you?'});
+  assert.equal(worker.organizerCallPermission(),false);
+  add('message.received',{from:'someone-else',delivery:'sms',body:'Yes'});
+  add('message.received',{from:'jeff',delivery:'chat',body:'Yes'});
+  assert.equal(worker.organizerCallPermission(),false);
+  add('message.received',{from:'jeff',delivery:'sms',body:'Yeah, give me a call'});
+  assert.equal(worker.organizerCallPermission(),true);
+  add('message.received',{from:'jeff',delivery:'sms',body:'Actually no, wait'});
+  assert.equal(worker.organizerCallPermission(),false);
+});
+
+test('opening call waits for callback promise and ended event, starts booker once across restart', async () => {
+  let now=0,saved={cursor:0,events:[],pending:null};const sent=[],events=[];
+  const add=(type,payload)=>events.push({seq:events.length+1,event_type:type,payload:{sid:'intro',...payload}});
+  const options={cid:'intro_flow',requireOwnerStart:true,now:()=>now,
+    client:{identity:'assistant',snapshot:async(_cid,cursor)=>({state:'open',capabilities:{assistant_voice:true,operations:['session.invite','session.end']},participants:[{role:'owner',participant_id:'owner'},{role:'booker',participant_id:'booker'},{role:'assistant',participant_id:'ai',subject:'assistant'}],events:events.filter(e=>e.seq>cursor)}),command:(type,cid,payload,extra)=>({type,cid,payload,...extra}),request:async frame=>{sent.push(frame);return {type:'ack'};}},
+    storage:{load:async()=>structuredClone(saved),save:async s=>{saved=structuredClone(s);}},planner:{decide:async()=>({actions:[]})}};
+  add('session.invited',{transport:'webrtc',participant_id:'owner',initiated_by:'owner',purpose:'Find Jonathan and Andrew a replacement flight from Reno to Atlanta. Text Jeff the flight update and ask, Can I call you? Then ring Jonathan and bridge him in.'});
+  let worker=new ConferenceWorker(options);await worker.step();assert.equal(sent.length,0);
+  add('session.assistant_actions',{source:'vapi',participant_id:'ai',actions:['finish_call']});
+  add('session.transcript',{speaker:'owner',is_final:true,text:'I missed it.'});
+  await worker.step();now=5000;await worker.step();assert.equal(sent.length,0,'missed-flight transcript alone cannot dial');
+  add('session.assistant_action',{source:'vapi',participant_id:'ai',action:'finish_call',reason:'completed',announcement_queued:true});
+  await worker.step();now=8000;await worker.step();assert.equal(sent.length,0,'wait for callback promise');
+  add('session.speech',{speaker:'ai',state:'stopped'});await worker.step();now=8400;await worker.step();
+  assert.deepEqual(sent.map(f=>f.type),['session.end']);
+  await worker.step();assert.equal(sent.length,1,'wait for actual ended event');
+  add('session.ended',{});worker=new ConferenceWorker(options);await worker.step();
+  assert.deepEqual(sent.map(f=>f.type),['session.end','session.invite']);assert.equal(sent[1].payload.to,'booker');
+  assert.match(sent[1].payload.purpose,/Reno to Atlanta/);
+  assert.doesNotMatch(sent[1].payload.purpose,/Text Jeff|ring Jonathan|bridge him/);
+  worker=new ConferenceWorker(options);await worker.step();assert.equal(sent.length,2,'no duplicate booking call');
+});
+
+test('abandoned opening call never starts the travel agent',async()=>{
+  for(const terminal of ['session.ended','session.failed','session.interrupted']){
+    const events=[{seq:1,event_type:'session.invited',payload:{sid:'intro',transport:'webrtc',participant_id:'owner',initiated_by:'owner',purpose:'Travel task'}},{seq:2,event_type:terminal,payload:{sid:'intro'}}];
+    const worker=new ConferenceWorker({cid:'c',requireOwnerStart:true,client:{identity:'assistant',snapshot:async()=>({state:'open',participants:[{role:'owner',participant_id:'owner'},{role:'assistant',participant_id:'ai',subject:'assistant'}],events})},storage:{load:async()=>({cursor:0,events:[],pending:null}),save:async()=>{}},planner:{decide:async()=>assert.fail('No planning after abandoned opening call')}});
+    await worker.step();
+  }
 });

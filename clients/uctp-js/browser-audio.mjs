@@ -4,15 +4,19 @@ export class BrowserAudio {
     this.client = client; this.cid = cid; this.audio = audioElement;
     this.microphoneId = microphoneId; this.speakerId = speakerId; this.onStream = onStream;
   }
-  async join(sid) {
+  async callDavid(purpose) { return this.join(null, purpose); }
+  async join(sid, introPurpose = null) {
     if (this.peer) throw new Error('Browser audio already active');
     this.sid = sid;
     this.media = await openMicrophone(this.microphoneId);
     try {
       await this.setSpeaker(this.speakerId);
       this.onStream(this.media);
-      const offer = await this.client.request(this.client.command('session.update', this.cid, { kind: 'join_browser' }, { sid }));
-      if (offer.type !== 'connection.offer' || offer.sid !== sid) throw new Error('Expected offer for the existing voice Session');
+      const opening = introPurpose !== null;
+      const offer = await this.client.request(this.client.command('session.update', this.cid,
+        opening ? { kind: 'call_david', purpose: introPurpose } : { kind: 'join_browser' }, opening ? {} : { sid }));
+      if (offer.type !== 'connection.offer' || (!opening && offer.sid !== sid)) throw new Error('Expected browser voice offer');
+      sid = offer.sid; this.sid = sid;
       this.connid = offer.connid;
       const peer = new RTCPeerConnection({ iceServers: offer.payload.ice_servers || [] }); this.peer = peer;
       peer.ontrack = event => { this.audio.srcObject = event.streams[0] || new MediaStream([event.track]); this.audio.play().catch(() => {}); };
@@ -24,8 +28,9 @@ export class BrowserAudio {
         substrate: 'webrtc', substrate_setup: { sdp_type: 'answer', sdp: peer.localDescription.sdp },
       }, { sid, connid: this.connid }));
       await waitState(peer, 'connectionstatechange', () => peer.connectionState === 'connected', 15000, 'WebRTC connection');
-      // The original assistant/telephone bridge remains until this commit.
-      return await this.client.request(this.client.command('session.update', this.cid, { kind: 'handoff_to_browser' }, { sid, connid: this.connid }));
+      if (opening) return offer; // The server attaches David when browser media connects.
+      // Answer connects privately to David. The organizer stays on hold until spoken consent.
+      return await this.client.request(this.client.command('session.update', this.cid, { kind: 'consult_with_assistant' }, { sid, connid: this.connid }));
     } catch (error) {
       if (this.connid && this.client.authenticated) {
         await this.client.request(this.client.command('connection.end', this.cid, {}, { sid, connid: this.connid })).catch(() => {});

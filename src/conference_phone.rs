@@ -99,7 +99,6 @@ pub async fn move_to_phone(
             .await;
             return;
         }
-        let mut prompt = None;
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -110,28 +109,16 @@ pub async fn move_to_phone(
                     return;
                 }
             };
-            if current.state == "confirmed" {
-                if let Some(prompt) = prompt.take() {
-                    if let Err(reason) =
-                        crate::conference_phone_prompt::PhonePrompt::stop(prompt, deadline).await
-                    {
-                        fail(&background, &tenant, &phone, reason).await;
-                        return;
-                    }
-                }
+            // Answering the owner-requested callback authorizes the move.
+            // Keep the browser route until bidirectional phone media is ready.
+            if matches!(current.state.as_str(), "answered" | "confirmed") {
                 break;
             }
             if !PENDING.contains(&current.state.as_str()) {
                 return;
             }
             if tokio::time::Instant::now() >= deadline {
-                fail(
-                    &background,
-                    &tenant,
-                    &phone,
-                    "answer and press-1 confirmation timed out",
-                )
-                .await;
+                fail(&background, &tenant, &phone, "telephone answer timed out").await;
                 return;
             }
             if background
@@ -149,38 +136,6 @@ pub async fn move_to_phone(
                 )
                 .await;
                 return;
-            }
-            if current.state == "answered" && prompt.is_none() {
-                let stream = background
-                    .orchestrator
-                    .wait_for_stream(
-                        ConnectionId::from_string(&phone.connection_id),
-                        rvoip_core::stream::StreamSelector::new(
-                            rvoip_core::stream::StreamKind::Audio,
-                        )
-                        .with_readiness(rvoip_core::stream::MediaReadiness::Bidirectional),
-                        deadline.min(tokio::time::Instant::now() + Duration::from_secs(10)),
-                        Default::default(),
-                    )
-                    .await;
-                let started = stream
-                    .map_err(|_| "callback prompt audio did not become ready")
-                    .and_then(crate::conference_phone_prompt::PhonePrompt::new);
-                match started {
-                    Ok(started) => prompt = Some(started),
-                    Err(reason) => {
-                        fail(&background, &tenant, &phone, reason).await;
-                        return;
-                    }
-                }
-                // Recheck cancellation/confirmation after the readiness wait.
-                continue;
-            }
-            if let Some(prompt) = prompt.as_mut() {
-                if let Err(reason) = prompt.send_next(deadline).await {
-                    fail(&background, &tenant, &phone, reason).await;
-                    return;
-                }
             }
             tick.tick().await;
         }
@@ -217,7 +172,7 @@ pub async fn move_to_phone(
                 .transition_phone_move(
                     &tenant,
                     &phone.connection_id,
-                    &["confirmed"],
+                    &["answered", "confirmed"],
                     "committing",
                     json!({}),
                 )
@@ -279,7 +234,7 @@ pub async fn move_to_phone(
         }
     });
     Ok(
-        json!({"sid":sid,"connid":connid,"state":"prepared","confirmation":"answer and press 1","retained_connid":retained_connid}),
+        json!({"sid":sid,"connid":connid,"state":"prepared","confirmation":"answer","retained_connid":retained_connid}),
     )
 }
 
@@ -382,11 +337,6 @@ pub fn mirror(state: &AppState, event: &Event) -> Result<()> {
         Event::ConnectionConnected { connection_id, .. } => {
             (connection_id, "answered", &["prepared", "dialing"][..])
         }
-        Event::DtmfReceived {
-            connection_id,
-            digits,
-            ..
-        } if digits == "1" => (connection_id, "confirmed", &["answered"][..]),
         Event::ConnectionEnded { connection_id, .. } => (
             connection_id,
             "ended",

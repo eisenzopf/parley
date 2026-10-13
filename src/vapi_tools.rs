@@ -135,16 +135,32 @@ pub fn handle_conference(
         return Err(ApiError::bad_request("invalid tool call count"));
     }
     let joins = crate::conference_voice::browser_join_tool_calls(message);
-    let finishes = crate::conference_voice::finish_call_tool_calls(message);
+    let booker = state
+        .store
+        .conference_voice_for_session(&state.config.tenant_id, sid)?
+        .is_some_and(|voice| {
+            state
+                .store
+                .conference_members(&state.config.tenant_id, &voice.conversation_id)
+                .is_ok_and(|members| {
+                    members.iter().any(|m| {
+                        m.role == "booker" && m.participant_id == voice.target_participant_id
+                    })
+                })
+        });
+    let finishes = crate::conference_voice::finish_call_tool_calls(message, booker);
+    let transfers = crate::conference_voice::connect_organizer_tool_calls(message);
     let mut results = Vec::with_capacity(calls.len());
     for call in calls {
         let id = call
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| ApiError::bad_request("tool call ID required"))?;
-        let valid = joins.contains(&id) || finishes.iter().any(|(item, _)| *item == id);
+        let valid = joins.contains(&id)
+            || transfers.contains(&id)
+            || finishes.iter().any(|(item, _)| *item == id);
         results.push(if valid {
-            json!({"toolCallId":id,"result":"Received."})
+            json!({"toolCallId":id,"result":if finishes.iter().any(|(item, _)| *item == id) { "This call is closing. Stay silent while the coordinator says goodbye and hangs up. Do not start another greeting or address another participant." } else { "Received." }})
         } else {
             json!({"toolCallId":id,"error":"Invalid conference action."})
         });

@@ -68,11 +68,44 @@ try {
     navigator.mediaDevices.getUserMedia = async () => destination.stream;
     const audio = new Audio(); audio.autoplay = true; document.body.append(audio);
     const controller = new BrowserAudio(client, f.cid, audio);
-    const result = await controller.join(f.sid);
+    let result = await controller.join(f.sid);
+    if (result.payload.session.state !== "consulting") throw new Error("Answer must start a private consultation");
     const sink = new AudioContext(); await sink.resume();
     const analyzer = sink.createAnalyser(); analyzer.fftSize = 4096;
     sink.createMediaStreamSource(audio.srcObject).connect(analyzer);
     const bins = new Float32Array(analyzer.frequencyBinCount);
+    const assistant = new UctpClient(f.url, f.assistant_token); await assistant.connect();
+    const transfer = () => assistant.request(assistant.command('session.update', f.cid, {kind:'connect_organizer'}, {sid:f.sid}));
+    const deniedTransfer = async () => { let rejected=false; try { await transfer(); } catch(e) { if(e.name==='UctpError') rejected=true; else throw e; } if(!rejected) throw new Error('Transfer succeeded without owner consent'); };
+    await deniedTransfer();
+    let davidAudible=0;
+    const consultDeadline=Date.now()+10000;
+    while(Date.now()<consultDeadline) {
+      analyzer.getFloatFrequencyData(bins); let peak=0,strongest=-Infinity;
+      for(let i=1;i<bins.length;i++) if(bins[i]>strongest) {strongest=bins[i];peak=i*sink.sampleRate/analyzer.fftSize;}
+      if(Math.abs(peak-440)<35 && strongest>-50) davidAudible++;
+      const media=await (await fetch('/__media_fixture')).json();
+      if(davidAudible>=8 && media.owner_frames>10) break;
+      await new Promise(r=>setTimeout(r,100));
+    }
+    if(davidAudible<8) throw new Error('Browser could not hear David privately');
+    const heldBefore=await (await fetch('/__media_fixture')).json();
+    await new Promise(r=>setTimeout(r,23000));
+    const heldAfter=await (await fetch('/__media_fixture')).json();
+    if(heldAfter.rtp_frames-heldBefore.rtp_frames<1000 || heldAfter.ai_frames!==heldBefore.ai_frames || heldAfter.human_frames!==heldBefore.human_frames || heldAfter.owner_frames<=heldBefore.owner_frames+5 || heldAfter.provider_frames!==heldBefore.provider_frames) throw new Error(`Consultation audio leaked or failed: ${JSON.stringify({heldBefore,heldAfter})}`);
+    const reply=async text=>{
+      await fetch('/__owner_reply',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});
+      const deadline=Date.now()+5000;
+      while(Date.now()<deadline) {
+        const snapshot=await client.snapshot(f.cid,0);
+        if(snapshot.events.some(e=>e.event_type==='session.transcript' && e.payload.text===text && e.payload.speaker===f.owner) && snapshot.events.some(e=>e.event_type==='session.assistant_action' && e.payload.action==='connect_organizer')) return;
+        await new Promise(r=>setTimeout(r,50));
+      }
+      throw new Error('Owner reply was not attributed correctly');
+    };
+    await reply('No, wait.'); await deniedTransfer();
+    await reply('Yes, go ahead.'); result=await transfer();
+    assistant.close();
     let peak = 0; let audible = 0; let inbound = 0; let outbound = 0; let codec;
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
@@ -100,7 +133,7 @@ try {
     }
     // Closing Chrome follows test completion; Rust checks the retained SIP call
     // before the telephone participant hangs up.
-    return { state: result.payload.session.state, retained: result.payload.session.retained_connid, rollbackVerified: true, microphoneDenialVerified: true, aiRetirementVerified: true, codec, peak, audible, inbound, outbound };
+    return { state: result.payload.session.state, retained: result.payload.session.retained_connid, rollbackVerified: true, microphoneDenialVerified: true, aiRetirementVerified: true, privateConsultVerified:true, consentVerified:true, codec, peak, audible, inbound, outbound };
   }, fixture);
   assert.equal(result.state, 'speaking');
   assert.equal(result.codec?.toLowerCase(), 'audio/opus');

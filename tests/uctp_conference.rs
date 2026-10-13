@@ -48,19 +48,30 @@ fn caller_pool_rotates_and_survives_restart() {
         );
     }
     let start = pool.iter().position(|n| n == &first).unwrap();
-    assert_eq!(actual, (0..4).map(|i| pool[(start + i) % pool.len()].clone()).collect::<Vec<_>>());
-    assert!(reopened.next_conference_caller("ten_local", "conv_caller_pool", &[pool[0].clone(), pool[0].clone()]).is_err());
+    assert_eq!(
+        actual,
+        (0..4)
+            .map(|i| pool[(start + i) % pool.len()].clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(reopened
+        .next_conference_caller(
+            "ten_local",
+            "conv_caller_pool",
+            &[pool[0].clone(), pool[0].clone()]
+        )
+        .is_err());
 }
 
 #[cfg(all(feature = "sip", feature = "vapi", feature = "media-webrtc"))]
 #[path = "support/conference_media.rs"]
 mod conference_media;
 #[cfg(all(feature = "sip", feature = "vapi", feature = "media-webrtc"))]
-#[path = "support/conference_scenario.rs"]
-mod conference_scenario;
-#[cfg(all(feature = "sip", feature = "vapi", feature = "media-webrtc"))]
 #[path = "support/conference_phone_media.rs"]
 mod conference_phone_media;
+#[cfg(all(feature = "sip", feature = "vapi", feature = "media-webrtc"))]
+#[path = "support/conference_scenario.rs"]
+mod conference_scenario;
 #[cfg(all(feature = "sip", feature = "vapi", feature = "media-webrtc"))]
 #[path = "support/vapi_provider.rs"]
 mod vapi_provider;
@@ -208,11 +219,16 @@ async fn live_sms_rejects_unreviewed_recipients_before_enqueue() {
     cfg.vapi_chat_mode = "live".into();
     cfg.sms_campaign_id = "approved-test-campaign".into();
     cfg.sms_enrollment_path = dir.path().join("enrollments.json").display().to_string();
-    std::fs::write(&cfg.sms_enrollment_path, json!({"version":1,
+    std::fs::write(
+        &cfg.sms_enrollment_path,
+        json!({"version":1,
         "source":"https://rudeless.ai/sms","sender_number":cfg.telnyx_from,
         "campaign_id":cfg.sms_campaign_id,"recipients":[{"number":"+14155550101",
         "web_enrollment_confirmed":true,"reviewed_at":"2026-10-10T19:00:00Z",
-        "evidence":"Recipient's web enrollment reviewed for the requested demo"}]}).to_string()).unwrap();
+        "evidence":"Recipient's web enrollment reviewed for the requested demo"}]})
+        .to_string(),
+    )
+    .unwrap();
     let app = App::new(cfg.clone(), Store::open(&cfg).unwrap()).unwrap();
     let url = url::Url::parse(&format!("ws://{}", app.start_uctp().await.unwrap())).unwrap();
     let mut admin = Peer::connect(&url, "test-admin").await;
@@ -220,17 +236,51 @@ async fn live_sms_rejects_unreviewed_recipients_before_enqueue() {
     let mut worker = member_peer(&app, &url, &cid, &members[4]).await;
     let body = "Rudeless Thelve: Your requested demo is confirmed. Reply STOP to opt out.";
     for (mid, recipients, content) in [
-        ("msg_unreviewed", vec![members[1].participant_id.clone()], body),
-        ("msg_unbranded", vec![members[0].participant_id.clone()], "Unbranded update"),
-        ("msg_mixed", vec![members[0].participant_id.clone(),members[1].participant_id.clone()], body),
+        (
+            "msg_unreviewed",
+            vec![members[1].participant_id.clone()],
+            body,
+        ),
+        (
+            "msg_unbranded",
+            vec![members[0].participant_id.clone()],
+            "Unbranded update",
+        ),
+        (
+            "msg_mixed",
+            vec![
+                members[0].participant_id.clone(),
+                members[1].participant_id.clone(),
+            ],
+            body,
+        ),
     ] {
-        let reply = worker.request(message(&cid, mid, recipients, content)).await;
+        let reply = worker
+            .request(message(&cid, mid, recipients, content))
+            .await;
         assert_eq!(reply.msg_type, MessageType::Error, "{reply:?}");
-        assert!(app.state.store.conference_deliveries("ten_local", &cid).unwrap().is_empty());
+        assert!(app
+            .state
+            .store
+            .conference_deliveries("ten_local", &cid)
+            .unwrap()
+            .is_empty());
     }
-    let preflight = worker.request(command(MessageType::Unknown("conversation.preflight".into()), Some(&cid), json!({}))).await;
+    let preflight = worker
+        .request(command(
+            MessageType::Unknown("conversation.preflight".into()),
+            Some(&cid),
+            json!({}),
+        ))
+        .await;
     let eligibility = preflight.payload["sms_eligibility"].as_array().unwrap();
-    assert_eq!(eligibility.iter().filter(|row| row["eligible"] == true).count(), 1);
+    assert_eq!(
+        eligibility
+            .iter()
+            .filter(|row| row["eligible"] == true)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1051,46 +1101,122 @@ fn ai_transport_failure_remains_a_failure_after_teardown_but_retired_ai_cannot_f
         {"alias":"owner","name":"Owner","role":"owner"},
         {"alias":"remote","name":"Remote","role":"organizer"},
         {"alias":"ai","name":"David","role":"assistant"}
-    ])).unwrap();
+    ]))
+    .unwrap();
     for (index, retired, ended, intentional) in [
-        (0, false, false, false), (1, false, true, false),
-        (2, true, false, false), (3, false, true, true),
+        (0, false, false, false),
+        (1, false, true, false),
+        (2, true, false, false),
+        (3, false, true, true),
     ] {
         let cid = format!("conv_ai_failure_{index}");
         let sid = format!("sess_ai_failure_{index}");
         let remote = format!("conn_remote_{index}");
         let ai = format!("conn_ai_{index}");
-        let members = store.create_conference("ten_local", &cid, &roster, "create").unwrap();
-        store.prepare_conference_voice("ten_local", &cid, &sid, "invite", &members[1], &members[2], &remote, "test", &members[2].participant_id).unwrap();
-        let voice = store.conference_voice_for_session("ten_local", &sid).unwrap().unwrap();
-        store.conference_ai_attached("ten_local", &voice, &ai, "bridge_ai").unwrap();
+        let members = store
+            .create_conference("ten_local", &cid, &roster, "create")
+            .unwrap();
+        store
+            .prepare_conference_voice(
+                "ten_local",
+                &cid,
+                &sid,
+                "invite",
+                &members[1],
+                &members[2],
+                &remote,
+                "test",
+                &members[2].participant_id,
+            )
+            .unwrap();
+        let voice = store
+            .conference_voice_for_session("ten_local", &sid)
+            .unwrap()
+            .unwrap();
+        store
+            .conference_ai_attached("ten_local", &voice, &ai, "bridge_ai")
+            .unwrap();
         if retired {
             let browser = format!("conn_browser_{index}");
-            store.prepare_conference_browser("ten_local", &voice, &members[0].participant_id, &browser, "browser").unwrap();
-            store.update_conference_browser("ten_local", &browser, "speaking", Some("handoff"), json!({"bridge_id":"bridge_browser","retained_connid":remote})).unwrap();
+            store
+                .prepare_conference_browser(
+                    "ten_local",
+                    &voice,
+                    &members[0].participant_id,
+                    &browser,
+                    "browser",
+                )
+                .unwrap();
+            store
+                .update_conference_browser(
+                    "ten_local",
+                    &browser,
+                    "speaking",
+                    Some("handoff"),
+                    json!({"bridge_id":"bridge_browser","retained_connid":remote}),
+                )
+                .unwrap();
         }
         if intentional {
             assert!(!store.mark_conference_ai_ending("ten_other", &sid).unwrap());
             assert!(store.mark_conference_ai_ending("ten_local", &sid).unwrap());
             assert!(!store.mark_conference_ai_ending("ten_local", &sid).unwrap());
         }
-        if ended { store.finish_conference_voice("ten_local", &sid, "ended", None).unwrap(); }
-        assert!(!store.record_conference_ai_failure("ten_other", &ai).unwrap());
-        assert_eq!(store.record_conference_ai_failure("ten_local", &ai).unwrap(), !retired && !intentional);
-        assert!(!store.record_conference_ai_failure("ten_local", &ai).unwrap());
+        if ended {
+            store
+                .finish_conference_voice("ten_local", &sid, "ended", None)
+                .unwrap();
+        }
+        assert!(!store
+            .record_conference_ai_failure("ten_other", &ai)
+            .unwrap());
+        assert_eq!(
+            store
+                .record_conference_ai_failure("ten_local", &ai)
+                .unwrap(),
+            !retired && !intentional
+        );
+        assert!(!store
+            .record_conference_ai_failure("ten_local", &ai)
+            .unwrap());
         assert!(!store.mark_conference_ai_ending("ten_local", &sid).unwrap());
-        let events = store.conference_events("ten_local", &cid, &members[0], 0, 500).unwrap();
-        let failures: Vec<_> = events.iter().filter(|event| event.event_type == "session.assistant_failed").collect();
+        let events = store
+            .conference_events("ten_local", &cid, &members[0], 0, 500)
+            .unwrap();
+        let failures: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "session.assistant_failed")
+            .collect();
         assert_eq!(failures.len(), usize::from(!retired && !intentional));
         if let Some(failure) = failures.first() {
             assert_eq!(failure.payload["connid"], ai);
             assert_eq!(failure.request_id.as_deref(), Some("invite"));
-            assert_eq!(store.get_connection("ten_local", &ai).unwrap().unwrap().state, "failed");
+            assert_eq!(
+                store
+                    .get_connection("ten_local", &ai)
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "failed"
+            );
         } else if retired {
-            assert_eq!(store.speaking_route("ten_local", &sid).unwrap().unwrap().participant_id, members[0].participant_id);
-            assert_eq!(store.get_session("ten_local", &sid).unwrap().unwrap().state, "active");
+            assert_eq!(
+                store
+                    .speaking_route("ten_local", &sid)
+                    .unwrap()
+                    .unwrap()
+                    .participant_id,
+                members[0].participant_id
+            );
+            assert_eq!(
+                store.get_session("ten_local", &sid).unwrap().unwrap().state,
+                "active"
+            );
         } else {
-            assert_eq!(store.get_session("ten_local", &sid).unwrap().unwrap().state, "ended");
+            assert_eq!(
+                store.get_session("ten_local", &sid).unwrap().unwrap().state,
+                "ended"
+            );
         }
     }
 }
@@ -1106,7 +1232,8 @@ async fn normal_remote_hangup_does_not_hide_ai_failures_that_caused_paired_teard
         {"alias":"owner","name":"Owner","role":"owner"},
         {"alias":"remote","name":"Remote","role":"organizer"},
         {"alias":"ai","name":"David","role":"assistant"}
-    ])).unwrap();
+    ]))
+    .unwrap();
     for (index, reason, failure_first, failed) in [
         (0, EndReason::Normal, false, false),
         (1, EndReason::BridgeTorn, false, true),
@@ -1116,59 +1243,266 @@ async fn normal_remote_hangup_does_not_hide_ai_failures_that_caused_paired_teard
         let sid = format!("sess_ai_mirror_{index}");
         let remote = format!("conn_remote_{index}");
         let ai = format!("conn_ai_{index}");
-        let members = store.create_conference("ten_local", &cid, &roster, "create").unwrap();
-        store.prepare_conference_voice("ten_local", &cid, &sid, "invite", &members[1], &members[2], &remote, "test", &members[2].participant_id).unwrap();
-        let voice = store.conference_voice_for_session("ten_local", &sid).unwrap().unwrap();
-        store.conference_ai_attached("ten_local", &voice, &ai, "bridge_ai").unwrap();
+        let members = store
+            .create_conference("ten_local", &cid, &roster, "create")
+            .unwrap();
+        store
+            .prepare_conference_voice(
+                "ten_local",
+                &cid,
+                &sid,
+                "invite",
+                &members[1],
+                &members[2],
+                &remote,
+                "test",
+                &members[2].participant_id,
+            )
+            .unwrap();
+        let voice = store
+            .conference_voice_for_session("ten_local", &sid)
+            .unwrap()
+            .unwrap();
+        store
+            .conference_ai_attached("ten_local", &voice, &ai, "bridge_ai")
+            .unwrap();
         let failure = Event::ConnectionFailed {
-            connection_id: ConnectionId::from_string(&ai), detail: "provider socket closed".into(), at: chrono::Utc::now(),
+            connection_id: ConnectionId::from_string(&ai),
+            detail: "provider socket closed".into(),
+            at: chrono::Utc::now(),
         };
-        if failure_first { parley::conference_voice::mirror(&app.state, &failure).unwrap(); }
-        parley::conference_voice::mirror(&app.state, &Event::ConnectionEnded {
-            connection_id: ConnectionId::from_string(&remote), reason, at: chrono::Utc::now(),
-        }).unwrap();
-        if !failure_first { parley::conference_voice::mirror(&app.state, &failure).unwrap(); }
-        let events = store.conference_events("ten_local", &cid, &members[0], 0, 500).unwrap();
-        assert_eq!(events.iter().filter(|event| event.event_type == "session.assistant_failed").count(), usize::from(failed));
+        if failure_first {
+            parley::conference_voice::mirror(&app.state, &failure).unwrap();
+        }
+        parley::conference_voice::mirror(
+            &app.state,
+            &Event::ConnectionEnded {
+                connection_id: ConnectionId::from_string(&remote),
+                reason,
+                at: chrono::Utc::now(),
+            },
+        )
+        .unwrap();
+        if !failure_first {
+            parley::conference_voice::mirror(&app.state, &failure).unwrap();
+        }
+        let events = store
+            .conference_events("ten_local", &cid, &members[0], 0, 500)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "session.assistant_failed")
+                .count(),
+            usize::from(failed)
+        );
     }
 }
 
 #[test]
 fn phone_move_admission_and_restart_never_redial_or_fabricate_a_commit() {
-    let dir=tempfile::tempdir().unwrap();let cfg=config(dir.path());let store=Store::open(&cfg).unwrap();
-    let roster:Vec<parley::store::conference::MemberInput>=serde_json::from_value(json!([
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = config(dir.path());
+    let store = Store::open(&cfg).unwrap();
+    let roster: Vec<parley::store::conference::MemberInput> = serde_json::from_value(json!([
         {"alias":"owner","name":"Owner","role":"owner"},
         {"alias":"remote","name":"Remote","role":"organizer"},
         {"alias":"ai","name":"AI","role":"assistant"}
-    ])).unwrap();
-    let members=store.create_conference("ten_local","conv_phone_recovery",&roster,"create").unwrap();
-    store.prepare_conference_voice("ten_local","conv_phone_recovery","sess_phone_recovery","invite",&members[1],&members[2],"conn_remote","test",&members[2].participant_id).unwrap();
-    let voice=store.conference_voice_for_session("ten_local","sess_phone_recovery").unwrap().unwrap();
-    store.conference_ai_attached("ten_local",&voice,"conn_ai","bridge_ai").unwrap();
-    store.prepare_conference_browser("ten_local",&voice,&members[0].participant_id,"conn_browser","browser").unwrap();
-    store.update_conference_browser("ten_local","conn_browser","speaking",Some("handoff"),json!({"bridge_id":"bridge_browser","retained_connid":"conn_remote"})).unwrap();
-    let route=store.speaking_route("ten_local","sess_phone_recovery").unwrap().unwrap();
-    assert_eq!(route.bridge_id,"bridge_browser");assert_eq!(route.participant_id,members[0].participant_id);
-    assert!(store.prepare_phone_move("ten_local","conv_other","sess_phone_recovery",&members[0],&route,"conn_foreign","foreign").is_err());
-    assert!(store.prepare_phone_move("ten_local","conv_phone_recovery","sess_phone_recovery",&members[2],&route,"conn_ai_phone","ai_phone").is_err());
-    store.prepare_phone_move("ten_local","conv_phone_recovery","sess_phone_recovery",&members[0],&route,"conn_phone","move").unwrap();
-    assert!(store.prepare_phone_move("ten_local","conv_phone_recovery","sess_phone_recovery",&members[0],&route,"conn_duplicate","duplicate").is_err());
-    assert!(store.get_connection("ten_local","conn_duplicate").unwrap().is_none());
-    assert!(store.phone_move("ten_other","conn_phone").unwrap().is_none());
-    assert!(!store.transition_phone_move("ten_local","conn_phone",&["answered"],"confirmed",json!({})).unwrap());
-    store.transition_phone_move("ten_local","conn_phone",&["prepared"],"answered",json!({})).unwrap();
-    assert!(store.transition_phone_move("ten_local","conn_phone",&["answered"],"confirmed",json!({})).unwrap());
-    assert!(!store.transition_phone_move("ten_local","conn_phone",&["answered"],"confirmed",json!({})).unwrap());
+    ]))
+    .unwrap();
+    let members = store
+        .create_conference("ten_local", "conv_phone_recovery", &roster, "create")
+        .unwrap();
+    store
+        .prepare_conference_voice(
+            "ten_local",
+            "conv_phone_recovery",
+            "sess_phone_recovery",
+            "invite",
+            &members[1],
+            &members[2],
+            "conn_remote",
+            "test",
+            &members[2].participant_id,
+        )
+        .unwrap();
+    let voice = store
+        .conference_voice_for_session("ten_local", "sess_phone_recovery")
+        .unwrap()
+        .unwrap();
+    store
+        .conference_ai_attached("ten_local", &voice, "conn_ai", "bridge_ai")
+        .unwrap();
+    store
+        .prepare_conference_browser(
+            "ten_local",
+            &voice,
+            &members[0].participant_id,
+            "conn_browser",
+            "browser",
+        )
+        .unwrap();
+    store
+        .update_conference_browser(
+            "ten_local",
+            "conn_browser",
+            "speaking",
+            Some("handoff"),
+            json!({"bridge_id":"bridge_browser","retained_connid":"conn_remote"}),
+        )
+        .unwrap();
+    let route = store
+        .speaking_route("ten_local", "sess_phone_recovery")
+        .unwrap()
+        .unwrap();
+    assert_eq!(route.bridge_id, "bridge_browser");
+    assert_eq!(route.participant_id, members[0].participant_id);
+    assert!(store
+        .prepare_phone_move(
+            "ten_local",
+            "conv_other",
+            "sess_phone_recovery",
+            &members[0],
+            &route,
+            "conn_foreign",
+            "foreign"
+        )
+        .is_err());
+    assert!(store
+        .prepare_phone_move(
+            "ten_local",
+            "conv_phone_recovery",
+            "sess_phone_recovery",
+            &members[2],
+            &route,
+            "conn_ai_phone",
+            "ai_phone"
+        )
+        .is_err());
+    store
+        .prepare_phone_move(
+            "ten_local",
+            "conv_phone_recovery",
+            "sess_phone_recovery",
+            &members[0],
+            &route,
+            "conn_phone",
+            "move",
+        )
+        .unwrap();
+    assert!(store
+        .prepare_phone_move(
+            "ten_local",
+            "conv_phone_recovery",
+            "sess_phone_recovery",
+            &members[0],
+            &route,
+            "conn_duplicate",
+            "duplicate"
+        )
+        .is_err());
+    assert!(store
+        .get_connection("ten_local", "conn_duplicate")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .phone_move("ten_other", "conn_phone")
+        .unwrap()
+        .is_none());
+    assert!(!store
+        .transition_phone_move(
+            "ten_local",
+            "conn_phone",
+            &["answered"],
+            "confirmed",
+            json!({})
+        )
+        .unwrap());
+    store
+        .transition_phone_move(
+            "ten_local",
+            "conn_phone",
+            &["prepared"],
+            "answered",
+            json!({}),
+        )
+        .unwrap();
+    assert!(store
+        .transition_phone_move(
+            "ten_local",
+            "conn_phone",
+            &["answered"],
+            "confirmed",
+            json!({})
+        )
+        .unwrap());
+    assert!(!store
+        .transition_phone_move(
+            "ten_local",
+            "conn_phone",
+            &["answered"],
+            "confirmed",
+            json!({})
+        )
+        .unwrap());
     drop(store);
-    let store=Store::open(&cfg).unwrap();store.recover_conference_voice().unwrap();store.recover_conference_voice().unwrap();
-    assert_eq!(store.phone_move("ten_local","conn_phone").unwrap().unwrap().state,"interrupted");
-    assert_eq!(store.get_connection("ten_local","conn_phone").unwrap().unwrap().state,"unknown");
-    assert!(!store.transition_phone_move("ten_local","conn_phone",&["confirmed"],"committing",json!({})).unwrap());
-    assert!(store.prepare_phone_move("ten_local","conv_phone_recovery","sess_phone_recovery",&members[0],&route,"conn_redial","redial").is_err());
-    let events=store.conference_events("ten_local","conv_phone_recovery",&members[0],0,500).unwrap();
-    assert_eq!(events.iter().filter(|e|e.event_type=="phone.prepared").count(),1);
-    assert_eq!(events.iter().filter(|e|e.event_type=="phone.confirmed").count(),1);
-    assert!(!events.iter().any(|e|e.event_type=="phone.speaking"));
+    let store = Store::open(&cfg).unwrap();
+    store.recover_conference_voice().unwrap();
+    store.recover_conference_voice().unwrap();
+    assert_eq!(
+        store
+            .phone_move("ten_local", "conn_phone")
+            .unwrap()
+            .unwrap()
+            .state,
+        "interrupted"
+    );
+    assert_eq!(
+        store
+            .get_connection("ten_local", "conn_phone")
+            .unwrap()
+            .unwrap()
+            .state,
+        "unknown"
+    );
+    assert!(!store
+        .transition_phone_move(
+            "ten_local",
+            "conn_phone",
+            &["confirmed"],
+            "committing",
+            json!({})
+        )
+        .unwrap());
+    assert!(store
+        .prepare_phone_move(
+            "ten_local",
+            "conv_phone_recovery",
+            "sess_phone_recovery",
+            &members[0],
+            &route,
+            "conn_redial",
+            "redial"
+        )
+        .is_err());
+    let events = store
+        .conference_events("ten_local", "conv_phone_recovery", &members[0], 0, 500)
+        .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "phone.prepared")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "phone.confirmed")
+            .count(),
+        1
+    );
+    assert!(!events.iter().any(|e| e.event_type == "phone.speaking"));
 }
 
 #[tokio::test]

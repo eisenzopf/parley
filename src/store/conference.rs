@@ -184,7 +184,9 @@ impl Store {
             })
             || pool.iter().collect::<std::collections::HashSet<_>>().len() != pool.len()
         {
-            return Err(ApiError::bad_request("caller pool requires unique E.164 numbers"));
+            return Err(ApiError::bad_request(
+                "caller pool requires unique E.164 numbers",
+            ));
         }
         let mut conn = self.conn.lock().expect("store lock");
         let tx = conn.transaction()?;
@@ -262,13 +264,15 @@ impl Store {
     ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store lock");
         let tx = conn.transaction()?;
-        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM conference_browser_connections WHERE tenant_id=?1 AND session_id=?2 AND state IN ('offered','answered','speaking'))",params![tenant,voice.session_id],|r|r.get(0))?;
+        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM conference_browser_connections WHERE tenant_id=?1 AND session_id=?2 AND state IN ('offered','answered','consulting','speaking'))",params![tenant,voice.session_id],|r|r.get(0))?;
         if exists {
             return Err(ApiError::conflict(
                 "a browser connection already exists for this Session",
             ));
         }
-        tx.execute("INSERT INTO connections(id,tenant_id,session_id,participant_id,transport,state) VALUES(?1,?2,?3,?4,'webrtc','connecting')",params![connid,tenant,voice.session_id,pid])?;
+        if voice.remote_connection_id != connid {
+            tx.execute("INSERT INTO connections(id,tenant_id,session_id,participant_id,transport,state) VALUES(?1,?2,?3,?4,'webrtc','connecting')",params![connid,tenant,voice.session_id,pid])?;
+        }
         tx.execute("INSERT INTO conference_browser_connections(connection_id,tenant_id,conversation_id,session_id,participant_id,request_id) VALUES(?1,?2,?3,?4,?5,?6)",params![connid,tenant,voice.conversation_id,voice.session_id,pid,request])?;
         append_event(
             &tx,
@@ -291,7 +295,7 @@ impl Store {
         pid: &str,
         connid: &str,
     ) -> Result<()> {
-        let allowed:bool=self.conn.lock().expect("store lock").query_row("SELECT EXISTS(SELECT 1 FROM conference_browser_connections WHERE tenant_id=?1 AND conversation_id=?2 AND session_id=?3 AND participant_id=?4 AND connection_id=?5 AND state IN ('offered','answered','speaking'))",params![tenant,cid,sid,pid,connid],|r|r.get(0))?;
+        let allowed:bool=self.conn.lock().expect("store lock").query_row("SELECT EXISTS(SELECT 1 FROM conference_browser_connections WHERE tenant_id=?1 AND conversation_id=?2 AND session_id=?3 AND participant_id=?4 AND connection_id=?5 AND state IN ('offered','answered','consulting','speaking'))",params![tenant,cid,sid,pid,connid],|r|r.get(0))?;
         if allowed {
             Ok(())
         } else {
@@ -327,13 +331,17 @@ impl Store {
             return Ok(());
         }
         tx.execute("UPDATE conference_browser_connections SET state=?3 WHERE tenant_id=?1 AND connection_id=?2",params![tenant,connid,state])?;
-        if state == "speaking" {
+        if matches!(state, "consulting" | "speaking") {
             let bridge = details["bridge_id"]
                 .as_str()
                 .ok_or_else(|| ApiError::internal("committed browser bridge missing"))?;
             tx.execute("INSERT INTO conference_speaking_routes(session_id,tenant_id,connection_id,participant_id,bridge_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(session_id) DO UPDATE SET connection_id=excluded.connection_id,participant_id=excluded.participant_id,bridge_id=excluded.bridge_id",params![sid,tenant,connid,pid,bridge])?;
         }
-        let connection_state = if state == "speaking" {
+        if matches!(state, "consulting" | "speaking") {
+            tx.execute("UPDATE conference_voice_operations SET ai_state=?3 WHERE tenant_id=?1 AND session_id=?2",
+                params![tenant,sid,if state == "consulting" { "consulting" } else { "retired" }])?;
+        }
+        let connection_state = if matches!(state, "consulting" | "speaking") {
             "connected"
         } else {
             state
@@ -381,6 +389,33 @@ impl Store {
         purpose: &str,
         initiated_by: &str,
     ) -> Result<()> {
+        self.prepare_conference_voice_transport(
+            tenant,
+            cid,
+            sid,
+            request,
+            target,
+            assistant,
+            connid,
+            purpose,
+            initiated_by,
+            "sip",
+        )
+    }
+
+    pub fn prepare_conference_voice_transport(
+        &self,
+        tenant: &str,
+        cid: &str,
+        sid: &str,
+        request: &str,
+        target: &Member,
+        assistant: &Member,
+        connid: &str,
+        purpose: &str,
+        initiated_by: &str,
+        transport: &str,
+    ) -> Result<()> {
         let mut conn = self.conn.lock().expect("store lock");
         let tx = conn.transaction()?;
         let open: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM conversations WHERE tenant_id=?1 AND id=?2 AND state='open')", params![tenant,cid], |r| r.get(0))?;
@@ -389,7 +424,7 @@ impl Store {
         }
         let now = Utc::now().to_rfc3339();
         tx.execute("INSERT INTO sessions(id,tenant_id,conversation_id,medium,state,started_at) VALUES(?1,?2,?3,'voice','active',?4)",params![sid,tenant,cid,now])?;
-        tx.execute("INSERT INTO connections(id,tenant_id,session_id,participant_id,transport,state) VALUES(?1,?2,?3,?4,'sip','prepared')",params![connid,tenant,sid,target.participant_id])?;
+        tx.execute("INSERT INTO connections(id,tenant_id,session_id,participant_id,transport,state) VALUES(?1,?2,?3,?4,?5,'prepared')",params![connid,tenant,sid,target.participant_id,transport])?;
         tx.execute("INSERT INTO conference_voice_operations(tenant_id,conversation_id,session_id,request_id,target_participant_id,assistant_participant_id,remote_connection_id,purpose) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![tenant,cid,sid,request,target.participant_id,assistant.participant_id,connid,purpose])?;
         append_event(
             &tx,
@@ -401,7 +436,7 @@ impl Store {
                 target.participant_id.clone(),
                 assistant.participant_id.clone(),
             ],
-            json!({"sid":sid,"connid":connid,"participant_id":target.participant_id,"purpose":purpose,"initiated_by":initiated_by,"state":"accepted","transport":"sip"}),
+            json!({"sid":sid,"connid":connid,"participant_id":target.participant_id,"purpose":purpose,"initiated_by":initiated_by,"state":"accepted","transport":transport}),
         )?;
         tx.commit()?;
         Ok(())
@@ -444,6 +479,11 @@ impl Store {
                 params![tenant, connid, state],
             )?;
         }
+        let transport: String = tx.query_row(
+            "SELECT transport FROM connections WHERE tenant_id=?1 AND id=?2",
+            params![tenant, connid],
+            |r| r.get(0),
+        )?;
         append_event(
             &tx,
             tenant,
@@ -454,7 +494,7 @@ impl Store {
                 voice.target_participant_id.clone(),
                 voice.assistant_participant_id.clone(),
             ],
-            json!({"sid":voice.session_id,"connid":connid,"participant_id":voice.target_participant_id,"state":state,"transport":"sip","details":details}),
+            json!({"sid":voice.session_id,"connid":connid,"participant_id":voice.target_participant_id,"state":state,"transport":transport,"details":details}),
         )?;
         tx.commit()?;
         Ok(())
@@ -554,10 +594,10 @@ impl Store {
     pub fn mark_conference_ai_ending(&self, tenant: &str, sid: &str) -> Result<bool> {
         let changed = self.conn.lock().expect("store lock").execute(
             "UPDATE conference_voice_operations SET ai_state='ending'
-             WHERE tenant_id=?1 AND session_id=?2 AND ai_state='attached'
+             WHERE tenant_id=?1 AND session_id=?2 AND ai_state IN ('attached','consulting')
              AND EXISTS (SELECT 1 FROM conference_speaking_routes r
                  WHERE r.tenant_id=?1 AND r.session_id=?2
-                 AND r.connection_id=conference_voice_operations.ai_connection_id)",
+                 AND (r.connection_id=conference_voice_operations.ai_connection_id OR conference_voice_operations.ai_state='consulting'))",
             params![tenant, sid],
         )?;
         Ok(changed == 1)
@@ -572,15 +612,27 @@ impl Store {
             "SELECT v.conversation_id,v.session_id,v.request_id,v.target_participant_id,v.assistant_participant_id
              FROM conference_voice_operations v JOIN conference_speaking_routes r
              ON r.tenant_id=v.tenant_id AND r.session_id=v.session_id
-             WHERE v.tenant_id=?1 AND v.ai_connection_id=?2 AND v.ai_state='attached' AND r.connection_id=?2",
+             WHERE v.tenant_id=?1 AND v.ai_connection_id=?2 AND v.ai_state IN ('attached','consulting') AND (r.connection_id=?2 OR v.ai_state='consulting')",
             params![tenant, connid],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         ).optional()?;
-        let Some((cid, sid, request, target, assistant)) = found else { return Ok(false); };
+        let Some((cid, sid, request, target, assistant)) = found else {
+            return Ok(false);
+        };
         tx.execute("UPDATE conference_voice_operations SET ai_state='failed' WHERE tenant_id=?1 AND session_id=?2", params![tenant, sid])?;
-        tx.execute("UPDATE connections SET state='failed' WHERE tenant_id=?1 AND id=?2", params![tenant, connid])?;
-        append_event(&tx, tenant, &cid, "session.assistant_failed", Some(&request), &[target, assistant],
-            json!({"sid":sid,"connid":connid,"state":"failed","reason":"AI voice transport failed"}))?;
+        tx.execute(
+            "UPDATE connections SET state='failed' WHERE tenant_id=?1 AND id=?2",
+            params![tenant, connid],
+        )?;
+        append_event(
+            &tx,
+            tenant,
+            &cid,
+            "session.assistant_failed",
+            Some(&request),
+            &[target, assistant],
+            json!({"sid":sid,"connid":connid,"state":"failed","reason":"AI voice transport failed"}),
+        )?;
         tx.commit()?;
         Ok(true)
     }

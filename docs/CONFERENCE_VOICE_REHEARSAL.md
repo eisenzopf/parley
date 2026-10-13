@@ -66,38 +66,46 @@ UCTP events as the assistant places calls and connections change.
 1. Open with: “An AI shouldn't have to know which network each person uses.
    Watch David, my AI assistant, reach a call-center agent, call an organizer, bring me
    in through my browser, and move me to my phone—all in one Conversation.”
-2. Select **Start coordinating**. The AI calls the Thelve booker. As the booker,
+2. Select **Call David · Start demo** and allow the microphone. David asks,
+   “Jonathan, are you on your flight?” Say, “Yeah, about that—I missed it.”
+   David replies, “Again? Okay, let me see what I can do. I’ll call you back.”
+   After he hangs up, the controls disappear and he calls the Thelve booker. As the booker,
    say: “I can get them both on the 11 AM flight out of Reno, into Atlanta
-   by 4 PM. Does that work?” If asked, supply the sandbox flight number and
-   arrival terminal. David should acknowledge the times, gather the missing
-   flight details and read the complete option back. No real change is booked.
-   Let David finish his spoken confirmation, then say: “Thank you, goodbye.”
+   by 4 PM, on American Airlines 2263. Does that work?” David only needs the
+   airline, flight number, departure time, and arrival time. He acknowledges new
+   information casually, asks only for a missing fact, and skips the final readback.
    David gives a brief goodbye and hangs up after his closing audio finishes;
    the booker does not have to hang up or wait for a timeout. If an answering AI or receptionist cannot supply the facts or connect the intended person, David asks for a transfer once, invokes `finish_call` with reason `unavailable`, and stays silent after the tool’s brief goodbye. The worker ends that Session without waiting for the other assistant to stop talking, then reports the incomplete task to the owner. After the first failed booker call, it reports the blockage in Jonathan’s chat and retries the booker once. If that retry also fails, it reports again and waits for new owner direction. Organizer failures still require owner direction. If the booker says
    goodbye before supplying all the facts, David ends respectfully and tells
    Jonathan what is missing instead of advancing with an invented itinerary.
 3. Once the booker's Session ends, David places a **new call** to the organizer
    stand-in, carrying the actual offered itinerary in the same Conversation.
-   The stand-in confirms pickup and can ask: “Should I take Jonathan and Alex
-   straight to the venue, or to the hotel first?” David explains that he will
-   bring Jonathan into this same call to answer. Keep that telephone connected.
+   The stand-in can ask whether Jonathan can cut his presentation thirty minutes
+   short because he is arriving late. David reacts lightly and invites Jonathan
+   into this same call so the organizer can ask him directly. Do not ask for pickup.
+   David says, “Ha! Hold on, let me get Jonathan on the line so you can tell him
+   that.” Keep that telephone connected.
    David invokes the explicit `request_browser_join` voice action. The host
    records that intent in the Conversation; the external worker sends the
    browser invitation through UCTP after speech finishes. The invitation should
    appear once. If David announces bringing Jonathan in but omits the tool call,
-   the worker asks the planner to verify pickup from the organizer's transcript
+   the worker asks the planner to verify the question for Jonathan in the organizer's transcript
    and send that same invitation. A greeting cannot trigger this fallback.
    David's spoken announcement alone does not establish the bridge;
    Jonathan must answer the browser invitation before the speaking peer changes.
-4. Wait for the browser to ring and display **Organizer call ready**. Jonathan
-   selects **Answer organizer call** and answers the organizer's question into
-   his browser microphone. The button remains disabled during the booker call.
-   Browser sound requires the preceding Connect/Start gesture; the visible
-   invitation remains available if the browser blocks audio.
-   Both people confirm they hear each other. The graph shows WebRTC, SIP/RTP,
-   the retired Vapi speaking connection and the retained organizer Connection.
+4. Wait for the browser to ring and display **David is calling**. All call
+   controls stay hidden until this invitation. Jonathan selects **Answer David**.
+   Jeff stays on hold while David privately says, “Hey, I got a flight for you.
+   I'll send you the details, but I've got Jeff on the other line. Can I connect him?”
+   Jonathan says yes. David's `connect_organizer` action and Jonathan's attributed
+   affirmative reply are both required before Jeff can hear Jonathan. A no or
+   wait keeps the conversation private. Browser sound requires the preceding
+   Connect/Start gesture; the visible invitation remains if audio is blocked.
+   Once connected, both people confirm they hear each other. The graph shows
+   WebRTC, SIP/RTP, the retired Vapi connection and the retained organizer call.
 5. Say: “Let me switch to my phone.” Select **Move to my phone**, answer the
-   callback and press **1**. Browser audio continues until confirmation succeeds.
+   callback. The call moves automatically once mobile audio is ready; browser audio
+   continues until the move succeeds.
    Keep the organizer's original call open and verify both telephone directions.
    Show the unchanged Conversation ID, Session ID and organizer Connection ID.
    Use separate handsets for the organizer and Jonathan's callback, so answering
