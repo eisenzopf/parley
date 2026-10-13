@@ -131,6 +131,7 @@ fn config(path: &std::path::Path) -> Config {
     cfg.api_secret = "test-admin".into();
     cfg.vapi_chat_mode = "fake".into();
     cfg.bind_uctp_ws = "127.0.0.1:0".into();
+    cfg.conference_sip_from = "sip:david@127.0.0.1".into();
     cfg.telnyx_from = "+14155550000".into();
     cfg
 }

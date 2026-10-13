@@ -3,7 +3,7 @@
   "rvoip": {
     "version": "0.3.12",
     "revision": "ca7861af4c9920f6949422ae1f40507bf56ede97",
-    "patch_sha256": "5dbcf5b4eccc84b4edbf3288f4a223b32f37dc27b84f4a06fc30dc29a5a50054",
+    "patch_sha256": "94d0da7eefffd858f9b867e825b32e46c960cfde52be3361362c105351321bfb",
     "files": {
       "crates/extensions/rvoip-vapi/src/adapter.rs": "a73b25df82d934827f298f6fe7ce0c377df76e9ff53a8cc8d2acf09885b62d36",
       "crates/extensions/rvoip-vapi/tests/mock_transport.rs": "2f703b4e9ca6c0f13b5d89dbc3267aa4e483179d6b7a32bde9fc5fb5ada1f6a3",
@@ -11,11 +11,11 @@
       "crates/sip/rvoip-sip/src/adapters/media_adapter.rs": "cef0e74c213421d6f4c15e2f9fb4c12313cdd3f7fe6eaf3df0c90aa32046b13f",
       "crates/sip/rvoip-sip/src/api/unified.rs": "a2a931350169e9d05e64dd6175cd2e196895a6377e49aecd6bb1470609e2f040",
       "crates/sip/rvoip-sip/src/media_stream.rs": "5d43d7da3bcabf092c64377e7edd241f640b7bad82f9b6ebdf6985dc53a5b7d1",
-      "crates/uctp/rvoip-uctp/src/application.rs": "7657bfdfc02fc552eadd73a9147bc5a5e5d0223dff0aaf2a3097b751a5450a45",
+      "crates/uctp/rvoip-uctp/src/application.rs": "6953632b67a1f056853687d583cd54fcb116821ea06d6590caa64b450260fc59",
       "crates/uctp/rvoip-uctp/src/lib.rs": "745c94fa8e146711df6d49af5e3457ab515fea87a14e75f67ab6a004a791d5ca",
-      "crates/uctp/rvoip-uctp/src/state/coordinator.rs": "34cdfe1ee354083fceb9c580cbee213f68c2b72395e2cae3f753afcfcce58589",
-      "crates/uctp/rvoip-websocket/src/adapter.rs": "2926d9dedf3c6b9c665f60e02ed70d73e77bda89371a135680c5933a0a0ddb8f",
-      "crates/uctp/rvoip-websocket/src/server.rs": "643947faadc8366cab0fa33b1264e0720a84b35fe77dd58f0618147a1ab65e28"
+      "crates/uctp/rvoip-uctp/src/state/coordinator.rs": "9a936fb40fb6c28e3bfdb75e91a005a7bb90c73a12ab17414e2f29ffbd1dbcb5",
+      "crates/uctp/rvoip-websocket/src/adapter.rs": "13abd6ba52570b9759ab119bdb17b4e5b05a26b5931a49e8ecb89f4df092f4d7",
+      "crates/uctp/rvoip-websocket/src/server.rs": "7358e3d27b4e1b58afe61c66a6ef2d521996012933bcf07f5c21e6d473bb5fb9"
     }
   },
   "vapi": {

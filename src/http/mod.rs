@@ -107,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/operators/bootstrap", post(tenant::bootstrap))
         .route("/v1/webhooks", get(webhooks::list).post(webhooks::create))
         .route("/v1/vapi/tools", post(webhooks::vapi_tools))
+        .route("/v1/vapi/conference-tools/:sid/:signature", post(webhooks::vapi_conference_tools))
         .route("/v1/test/sms/inbound", post(webhooks::sms_inbound_dev))
         .route("/v1/sms/inbound", post(webhooks::sms_inbound))
         .with_state(state)

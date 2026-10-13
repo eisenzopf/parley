@@ -120,6 +120,18 @@ automatic provider resource provisioning. Tunneling defaults off; explicitly set
 that database remains eligible; choose the intended rehearsal state. This does
 not start the worker, send a test SMS, or dial a test call on its own.
 
+Conference David is a transient Vapi assistant assembled for each call, independent
+of the saved `VAPI_ASSISTANT_ID` and the text planner. He defaults to Vapi's
+`gpt-realtime-2` with OpenAI's `cedar` voice; the system message becomes realtime
+session instructions, with no separate transcriber. Set
+`PARLEY_CONFERENCE_VOICE_MODEL=gpt-4o-mini` in the server environment to restore
+the previous voice model. The booker and organizer function tools and UCTP
+handoff remain coordinator-owned in either mode. Realtime 2 tool calls receive
+an acknowledgement through a call-scoped signed URL because transient Vapi
+webhooks do not inherit the organization's server credential. Rehearse with
+`scripts/run-conference-demo.sh live-voice` using local SIP speech before a
+live phone call.
+
 After provisioning, inspect the actual authenticated UCTP profile and local state:
 
 ```sh

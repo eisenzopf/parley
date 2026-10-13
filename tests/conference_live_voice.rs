@@ -134,7 +134,10 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
     cfg.api_secret = "test-admin".into();
     cfg.vapi_chat_mode = "fake".into();
     cfg.vapi_assistant_id = assistant_id.clone();
+    cfg.vapi_public_base = std::env::var("PARLEY_CONFERENCE_TOOL_BASE")
+        .unwrap_or_else(|_| "https://conference.rudeless.ai".into());
     cfg.bind_uctp_ws = "127.0.0.1:0".into();
+    cfg.conference_sip_from = "sip:david@127.0.0.1".into();
     cfg.telnyx_from = "+14155550000".into();
     let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     cfg.conference_sip_bind = Some(socket.local_addr().unwrap().to_string());
@@ -276,8 +279,9 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
     // A WebSocket can close before a terminal event arrives. Verify the
     // authoritative provider resource, matched to this exact synthetic call.
     let provider_rest_ended = Arc::new(AtomicBool::new(false));
+    let provider_pipeline_error = Arc::new(AtomicBool::new(false));
     let provider_matched = Arc::new(AtomicBool::new(false));
-    let (rest_ended, matched) = (provider_rest_ended.clone(), provider_matched.clone());
+    let (rest_ended, pipeline_error, matched) = (provider_rest_ended.clone(), provider_pipeline_error.clone(), provider_matched.clone());
     let (check_cid, check_sid) = (cid.clone(), sid.clone());
     let status_check = tokio::spawn(async move {
         let http = reqwest::Client::builder()
@@ -306,7 +310,7 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
                         for call in calls {
                             if call["metadata"]["conversation_id"] != check_cid
                                 || call["metadata"]["session_id"] != check_sid
-                                || call["metadata"]["voice_profile"] != "conference-voice/2"
+                                || call["metadata"]["voice_profile"] != "conference-voice/3"
                                 || call["type"] != "vapi.websocketCall"
                             {
                                 continue;
@@ -318,6 +322,9 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
                                 matched.store(true, Ordering::SeqCst);
                             }
                             if call["status"] == "ended" && call["endedAt"].is_string() {
+                                if call["endedReason"].as_str().unwrap_or("").starts_with("pipeline-error") {
+                                    pipeline_error.store(true, Ordering::SeqCst);
+                                }
                                 rest_ended.store(true, Ordering::SeqCst);
                                 return;
                             }
@@ -330,6 +337,7 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
     });
     let mut user_fact = false;
     let mut ai_fact = false;
+    let mut join_action = false;
     let mut attached = false;
     let result = tokio::time::timeout(Duration::from_secs(90), async {
         loop {
@@ -347,6 +355,12 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
                 if event["event_type"] == "session.assistant_attached" {
                     attached = true;
                 }
+                if event["event_type"] == "session.assistant_action"
+                    && event["payload"]["action"] == "request_browser_join"
+                    && event["payload"]["sid"] == sid
+                {
+                    join_action = true;
+                }
                 if event["event_type"] != "session.transcript" {
                     continue;
                 }
@@ -361,7 +375,7 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
                     ai_fact |= fact["speaker"] == ai_id;
                 }
             }
-            if user_fact && ai_fact && response_audio.load(Ordering::SeqCst) > 10 {
+            if user_fact && join_action && response_audio.load(Ordering::SeqCst) > 10 {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -371,6 +385,18 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
     let reply_audio_before_handoff = response_audio.load(Ordering::SeqCst);
     let mut browser_output = None;
     if matches!(result, Ok(Ok(()))) {
+        // The production worker sends this invitation after David's attributed
+        // tool action. This gate runs without the worker, so send its exact
+        // owner-facing chat message before checking the real browser handoff.
+        let assistant_token = app.state.store.issue_conference_token("ten_local", &cid, ai_id).unwrap();
+        let mut assistant_peer = Peer::connect(&url, &assistant_token).await;
+        let invite = assistant_peer.request(command(MessageType::MessageSend, Some(&cid), json!({
+            "msg_id":"msg_live_voice_invitation",
+            "to":[owner_id], "delivery":"chat", "content_type":"application/json",
+            "body":json!({"type":"travel.browser_invitation","version":1,"sid":sid,
+                "retained_connid":accepted.payload["session"]["connid"]}).to_string()
+        }))).await;
+        assert_eq!(invite.msg_type, MessageType::Ack, "browser invitation rejected");
         tone_mode.store(true, Ordering::SeqCst);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let http = format!("http://{}", listener.local_addr().unwrap());
@@ -387,10 +413,12 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
         let web = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
-        browser_output = Some(tokio::time::timeout(Duration::from_secs(60),tokio::process::Command::new("node")
+        browser_output = Some(tokio::time::timeout(Duration::from_secs(90),tokio::process::Command::new("node")
             .arg("e2e/conference-live-voice.mjs")
             .env("LIVE_VOICE_FIXTURE",json!({"http":http,"url":url.as_str(),"cid":cid,"token":token,"connid":accepted.payload["session"]["connid"]}).to_string())
-            .kill_on_drop(true).output()).await);
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true).status()).await);
         web.abort();
     }
     // Always request teardown before asserting probe success, including timeouts.
@@ -405,8 +433,8 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
         "{}",
         json!({"event":"live.voice.probe","mode":"live Vapi voice; synthetic local SIP participant; no PSTN or SMS",
         "attached":attached,"speech_sent":speech_sent.load(Ordering::SeqCst),"audible_frames":audible.load(Ordering::SeqCst),
-        "vapi_reply_audio_frames_before_handoff":reply_audio_before_handoff,"attributed_user_confirmation":user_fact,"attributed_assistant_confirmation":ai_fact,
-        "provider_ended_event":provider_ended.load(Ordering::SeqCst),"provider_resource_matched":provider_matched.load(Ordering::SeqCst),
+        "vapi_reply_audio_frames_before_handoff":reply_audio_before_handoff,"attributed_user_confirmation":user_fact,"attributed_assistant_confirmation":ai_fact,"request_browser_join":join_action,
+        "provider_ended_event":provider_ended.load(Ordering::SeqCst),"provider_resource_matched":provider_matched.load(Ordering::SeqCst),"provider_pipeline_error":provider_pipeline_error.load(Ordering::SeqCst),
         "provider_resource_ended":provider_rest_ended.load(Ordering::SeqCst),"sip_ended":remote_ended.load(Ordering::SeqCst)})
     );
     assert_eq!(closed.msg_type, MessageType::Ack, "UCTP teardown rejected");
@@ -421,12 +449,9 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
         .expect("browser probe timeout")
         .expect("browser probe process failed");
     assert!(
-        browser_output.status.success(),
-        "browser handoff failed: {}\n{}",
-        String::from_utf8_lossy(&browser_output.stdout),
-        String::from_utf8_lossy(&browser_output.stderr)
+        browser_output.success(),
+        "browser handoff failed with {browser_output}"
     );
-    println!("{}", String::from_utf8_lossy(&browser_output.stdout));
     assert!(
         browser_audio.load(Ordering::SeqCst) > 10,
         "SIP must receive browser audio"
@@ -435,6 +460,7 @@ async fn live_vapi_voice_roundtrip_over_uctp_and_local_sip() {
         provider_rest_ended.load(Ordering::SeqCst),
         "matched provider resource must confirm call termination"
     );
+    assert!(!provider_pipeline_error.load(Ordering::SeqCst), "provider pipeline must not fail");
     assert_eq!(
         app.state
             .store

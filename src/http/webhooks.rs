@@ -4,7 +4,7 @@ use crate::runtime::AppState;
 use crate::sms::{self, InboundSms};
 use crate::vapi_tools;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use serde_json::{json, Value};
@@ -32,6 +32,16 @@ pub async fn vapi_tools(
 ) -> Result<Json<Value>, ApiError> {
     let result = vapi_tools::handle(&state, &headers, body).await?;
     Ok(Json(result))
+}
+
+pub async fn vapi_conference_tools(
+    State(state): State<AppState>,
+    Path((sid, signature)): Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(vapi_tools::handle_conference(
+        &state, &sid, &signature, body,
+    )?))
 }
 
 pub async fn sms_inbound_dev(

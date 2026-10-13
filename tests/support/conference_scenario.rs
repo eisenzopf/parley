@@ -265,9 +265,13 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 assert!(body.get("assistantId").is_none());
                 assert!(body.get("assistantOverrides").is_none());
                 assert!(body["assistant"].get("server").is_none());
-                assert_eq!(body["metadata"]["voice_profile"],"conference-voice/2");
-                assert!(body["assistant"]["firstMessage"].as_str().unwrap().contains("I'm David, Jonathan's AI assistant"));
+                assert_eq!(body["metadata"]["voice_profile"],"conference-voice/3");
+                assert_eq!(body["assistant"]["firstMessage"], "Hi, this is David calling for Jonathan. Is now a good time?");
                 assert!(body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap().contains("You are David, Jonathan's AI"));
+                assert_eq!(body["assistant"]["model"]["model"], "gpt-realtime-2");
+                assert_eq!(body["assistant"]["model"]["maxTokens"], 250);
+                assert_eq!(body["assistant"]["voice"], json!({"provider":"openai","voiceId":"cedar"}));
+                assert!(body["assistant"].get("transcriber").is_none());
                 assert_eq!(body["assistant"]["silenceTimeoutSeconds"], if n == 0 { 30 } else { 180 }, "organizer must remain connected during coordinator/browser waiting");
                 assert_eq!(body["assistant"]["maxDurationSeconds"], 600);
                 let prompt = body["assistant"]["model"]["messages"][0]["content"].as_str().unwrap();
@@ -277,14 +281,14 @@ async fn complete_conference_scenario_uses_external_worker_and_stage_ui() {
                 } else {
                     assert!(prompt.contains("invoke request_browser_join exactly once"));
                     assert_eq!(body["assistant"]["model"]["tools"][0]["function"]["name"],"request_browser_join");
-                    assert_eq!(body["assistant"]["model"]["tools"][0]["async"],true);
-                    assert!(body["assistant"]["model"]["tools"][0].get("server").is_none());
+                    assert_eq!(body["assistant"]["model"]["tools"][0]["async"],false);
+                    assert!(body["assistant"]["model"]["tools"][0]["server"]["url"].as_str().unwrap().contains("/v1/vapi/conference-tools/"));
                     assert!(!prompt.contains("ask what the reservationist can offer"));
                 }
                 let finish = body["assistant"]["model"]["tools"].as_array().unwrap().iter().find(|tool| tool["function"]["name"] == "finish_call").unwrap();
-                assert_eq!(finish["async"], true);
+                assert_eq!(finish["async"], false);
                 assert_eq!(finish["messages"], json!([]), "the coordinator queues exact announcement audio");
-                assert!(finish.get("server").is_none(), "only UCTP executes call termination");
+                assert!(finish["server"]["url"].as_str().unwrap().contains("/v1/vapi/conference-tools/"), "webhook only acknowledges; UCTP executes call termination");
                 assert!(prompt.contains("ask once whether they can connect you"));
                 assert!(n<2,"no duplicate provider calls");
                 axum::Json(json!({"id":format!("fixture-call-{n}"),"transport":{"websocketCallUrl":audio_url}}))

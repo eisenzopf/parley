@@ -32,7 +32,17 @@ pub struct ToolCall {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
+    pub function: Option<ToolFunction>,
+    #[serde(default)]
     pub parameters: Option<Value>,
+}
+
+#[derive(Deserialize)]
+pub struct ToolFunction {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<Value>,
 }
 
 pub async fn handle(state: &AppState, headers: &HeaderMap, body: Value) -> Result<Value> {
@@ -56,15 +66,26 @@ pub async fn handle(state: &AppState, headers: &HeaderMap, body: Value) -> Resul
         .unwrap_or(&[]);
     if calls.is_empty() {
         if let Some(name) = req.name.as_deref() {
-            let result = dispatch(state, name, req.parameters.as_ref().unwrap_or(&json!({}))).await?;
-            return Ok(json!({ "results": [{ "toolCallId": req.tool_call_id, "result": result }] }));
+            let result =
+                dispatch(state, name, req.parameters.as_ref().unwrap_or(&json!({}))).await?;
+            return Ok(
+                json!({ "results": [{ "toolCallId": req.tool_call_id, "result": result }] }),
+            );
         }
         return Ok(json!({ "results": [] }));
     }
     let mut results = Vec::new();
     for call in calls {
-        let name = call.name.as_deref().unwrap_or("");
-        let params = call.parameters.clone().unwrap_or_else(|| json!({}));
+        let name = call
+            .name
+            .as_deref()
+            .or_else(|| call.function.as_ref()?.name.as_deref())
+            .unwrap_or("");
+        let params = call
+            .parameters
+            .clone()
+            .or_else(|| call.function.as_ref()?.arguments.clone())
+            .unwrap_or_else(|| json!({}));
         let result = dispatch(state, name, &params).await?;
         results.push(json!({
             "toolCallId": call.id,
@@ -72,6 +93,63 @@ pub async fn handle(state: &AppState, headers: &HeaderMap, body: Value) -> Resul
         }));
     }
     Ok(json!({ "results": results }))
+}
+
+pub fn conference_tool_signature(secret: &str, sid: &str) -> String {
+    let key = blake3::derive_key("Parley Vapi conference tool URL v1", secret.as_bytes());
+    blake3::keyed_hash(&key, sid.as_bytes())
+        .to_hex()
+        .to_string()
+}
+
+/// A transient Vapi assistant cannot rely on an org credential for its inline
+/// tool URL. Authenticate a call-scoped URL, then return a synchronous result.
+/// The attributed WebSocket event still owns the actual UCTP side effect.
+pub fn handle_conference(
+    state: &AppState,
+    sid: &str,
+    signature: &str,
+    body: Value,
+) -> Result<Value> {
+    let secret = &state.config.vapi_api_key;
+    if secret.is_empty() || sid.is_empty() || sid.len() > 128 {
+        return Err(ApiError::unauthorized("invalid conference tool signature"));
+    }
+    let expected = conference_tool_signature(secret, sid);
+    let mismatch = signature
+        .as_bytes()
+        .iter()
+        .zip(expected.as_bytes())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b));
+    if signature.len() != expected.len() || mismatch != 0 {
+        return Err(ApiError::unauthorized("invalid conference tool signature"));
+    }
+    let message = body
+        .get("message")
+        .ok_or_else(|| ApiError::bad_request("tool message required"))?;
+    let calls = message
+        .get("toolCallList")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::bad_request("tool call list required"))?;
+    if calls.is_empty() || calls.len() > 4 {
+        return Err(ApiError::bad_request("invalid tool call count"));
+    }
+    let joins = crate::conference_voice::browser_join_tool_calls(message);
+    let finishes = crate::conference_voice::finish_call_tool_calls(message);
+    let mut results = Vec::with_capacity(calls.len());
+    for call in calls {
+        let id = call
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::bad_request("tool call ID required"))?;
+        let valid = joins.contains(&id) || finishes.iter().any(|(item, _)| *item == id);
+        results.push(if valid {
+            json!({"toolCallId":id,"result":"Received."})
+        } else {
+            json!({"toolCallId":id,"error":"Invalid conference action."})
+        });
+    }
+    Ok(json!({"results":results}))
 }
 
 fn authorize_vapi(state: &AppState, headers: &HeaderMap) -> Result<()> {

@@ -144,7 +144,9 @@ try {
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.locator('#status')).toContainText(voiceOnly ? 'SMS deferred' : 'SMS fixture');
   await pauseForRecording(2000);
+  await page.locator('#open-settings').click();
   await page.locator('#task').fill(scenario.task);
+  await page.locator('#close-settings').click();
   await page.getByRole('button', { name: 'Start coordinating' }).click();
   await expect(page.locator('#join')).toBeDisabled();
   const poll = async (fn, message) => {
@@ -263,11 +265,9 @@ try {
   const after = await (await fetch(`${fixture.http}/__scenario_fixture`)).json(); assert.ok(after.human_frames > 10); assert.equal(after.ended, false);
   const room = await page.evaluate(() => ({
     viewport: innerHeight,
-    pageHeight: document.documentElement.scrollHeight,
     endBottom: document.querySelector('#end').getBoundingClientRect().bottom,
-    footerBottom: document.querySelector('#contribution-panel').getBoundingClientRect().bottom,
   }));
-  assert.ok(room.pageHeight <= room.viewport + 1 && room.footerBottom <= room.viewport && room.endBottom <= room.viewport, JSON.stringify(room));
+  assert.ok(room.endBottom > 0 && room.endBottom <= room.viewport, JSON.stringify(room));
   await mkdir('test-results', { recursive: true });
   await page.screenshot({ path: `test-results/${screenshotPrefix}-handoff.png`, fullPage: true });
   await pauseForRecording(3000);

@@ -48,10 +48,11 @@ Include this caller/reservationist distinction explicitly in the booker call's p
 Give the reservationist the route, traveler count and requested departure/arrival changes from the owner's task.
 Ask what flights and times they can actually offer. The owner's desired times are preferences, not confirmed inventory.
 Wait for the booker's offered flight number, departure, arrival and terminal; the offer may differ from the requested times.
-Ask the AI voice agent to acknowledge whether the offered times fit the requested window, gather any missing
-flight number and arrival terminal, and read the complete offered option back. It must finish that confirmation
-before the call ends. Acknowledge a suitable sandbox option without claiming the owner has approved or a real
-reservation has been changed; the owner approves the option after the organizer confirmation call.
+Ask the AI voice agent to gather only missing facts and give one brief final recap for confirmation.
+Do not put a question list or repeated verification instructions in the call purpose. Let the booker volunteer
+details and finish speaking before David asks about a missing fact. Acknowledge a suitable sandbox option
+without claiming the owner has approved or a real reservation has been changed; the owner approves
+the option after the organizer confirmation call.
 Carry the offered flight and times into the organizer call and approval proposal; never replace them with the requested times.
 In demo_mode full, then text the organizer, wait for their reply, and call to confirm arrangements.
 In demo_mode voice-only, skip all SMS: call the organizer directly with the booker's itinerary and ask about pickup.
@@ -83,7 +84,7 @@ For a repeated booker failure or an organizer failure, wait for owner direction;
 session.speech reports attributed started/stopped activity. Do not end a call while either the human or the AI is speaking.
 The booker voice agent asks one short question per turn and waits for the answer; its call purpose is context,
 not a long script. Do not put a list of questions or instructions to say everything at once in that purpose.
-Let the AI finish its spoken readback, receive confirmation, and invoke finish_call. The coordinator speaks
+Let the AI finish its single concise recap, receive confirmation, and invoke finish_call. The coordinator speaks
 one thank-you and goodbye and waits for that audio before ending the booker call. Never issue end_voice
 or text the organizer early merely because itinerary facts have appeared in transcript fragments.
 When the booker says goodbye or clearly asks to finish, have David give one brief goodbye, wait for

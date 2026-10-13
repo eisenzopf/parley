@@ -35,6 +35,10 @@ pub struct Config {
     pub vapi_api_key: String,
     #[serde(default)]
     pub vapi_assistant_id: String,
+    /// Model used by the transient conference voice assistant, independent of
+    /// the saved general-purpose Vapi assistant and the text planner.
+    #[serde(default = "default_conference_voice_model")]
+    pub conference_voice_model: String,
     #[serde(default = "default_vapi_public")]
     pub vapi_public_base: String,
     #[serde(default)]
@@ -98,6 +102,7 @@ impl Default for Config {
             operator_bootstrap_token: String::new(),
             vapi_api_key: String::new(),
             vapi_assistant_id: String::new(),
+            conference_voice_model: default_conference_voice_model(),
             vapi_public_base: default_vapi_public(),
             sip_advertise: String::new(),
             reopen_window_secs: default_reopen(),
@@ -138,6 +143,7 @@ impl fmt::Debug for Config {
             )
             .field("vapi_api_key", &redact(&self.vapi_api_key))
             .field("vapi_assistant_id", &self.vapi_assistant_id)
+            .field("conference_voice_model", &self.conference_voice_model)
             .field("vapi_public_base", &self.vapi_public_base)
             .field("sip_advertise", &self.sip_advertise)
             .field("reopen_window_secs", &self.reopen_window_secs)
@@ -205,6 +211,14 @@ impl Config {
         };
         overlay_env(&mut cfg);
         cfg.conference_network.overlay_env()?;
+        if !matches!(
+            cfg.conference_voice_model.as_str(),
+            "gpt-realtime-2" | "gpt-4o-mini"
+        ) {
+            return Err(ApiError::bad_request(
+                "unsupported PARLEY_CONFERENCE_VOICE_MODEL",
+            ));
+        }
         Ok(cfg)
     }
 
@@ -310,6 +324,9 @@ fn overlay_env(cfg: &mut Config) {
     if let Some(v) = first_env(&["PARLEY_VAPI_ASSISTANT", "VAPI_ASSISTANT_ID"]) {
         cfg.vapi_assistant_id = v;
     }
+    if let Some(v) = first_env(&["PARLEY_CONFERENCE_VOICE_MODEL"]) {
+        cfg.conference_voice_model = v;
+    }
     if let Some(v) = first_env(&["PARLEY_PUBLIC_BASE", "VAPI_PUBLIC_BASE"]) {
         cfg.vapi_public_base = v;
     }
@@ -408,6 +425,9 @@ fn default_tenant() -> String {
 }
 fn default_vapi_public() -> String {
     "http://127.0.0.1:8080".into()
+}
+fn default_conference_voice_model() -> String {
+    "gpt-realtime-2".into()
 }
 fn default_reopen() -> i64 {
     604800

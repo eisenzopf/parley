@@ -564,6 +564,9 @@ pub async fn attach_vapi(
 ) -> Result<()> {
     use rvoip_vapi::{VapiAssistant, VapiAudioFormat, VapiCallOptions, VapiEvent};
     let tenant = &state.config.tenant_id;
+    if !matches!(state.config.conference_voice_model.as_str(), "gpt-realtime-2" | "gpt-4o-mini") {
+        return Err(ApiError::conflict("unsupported conference voice model"));
+    }
     if !state.store.claim_conference_ai(tenant, &voice.session_id)? {
         return Ok(());
     }
@@ -608,12 +611,12 @@ pub async fn attach_vapi(
         )));
     }
     let role_instructions = match target.role.as_str() {
-        "booker" => "Pace the conversation with one short question per turn, then wait for the reservationist's complete answer. Start with the canceled route and two travelers, and ask whether a replacement is available. Supply the desired travel times as context when relevant. Do not read the task verbatim or list all required details in one question. Ask only for the next missing fact: the offered flight, departure time, arrival time, two seats, then arrival terminal or gate. Do not ask again for facts already supplied. The reservationist supplies availability and actual times; never substitute desired times. Once you have the offered facts, read them back once, ask whether you have them right, and wait for confirmation. Only after that confirmation invoke finish_call with reason completed. The coordinator speaks 'Thank you for your help. Goodbye.' and lets it finish playing before disconnecting; do not restart the readback or speak after invoking the tool. When the reservationist says goodbye or clearly ends the conversation, invoke finish_call with reason participant_goodbye and stop speaking. Respect their goodbye even when facts are missing; never invent those facts.",
-        "organizer" => "Give the confirmed itinerary briefly and ask one question about pickup, then wait for the organizer's answer. Ask about the meeting point separately if still missing. The organizer arranges ground logistics. Once pickup is confirmed, acknowledge it briefly and invoke request_browser_join exactly once. The coordinator speaks exactly 'One moment while I bring Jonathan into the conversation.', waits for that announcement to finish, then rings his browser. Do not give a separate handoff announcement yourself. Merely saying you will bring him in does not invoke the tool. After invoking it, stop speaking and wait quietly; keep the call open. Do not speak on Jonathan's behalf, address him as if he has already joined, or claim the handoff has happened. The actual UCTP browser handoff is performed by the external coordinator and Jonathan.",
+        "booker" => "Ask if a replacement is available for the canceled route and two travelers. Offer the requested times as preferences, not confirmed inventory. Ask one short question, then let the reservationist finish. Gather only missing facts: offered flight, actual departure and arrival, two seats, and arrival terminal or gate. Accept facts they volunteer without asking again. Once the offer is complete, give ONE compact recap of those facts and ask for confirmation; do not verify each item separately. After their confirmation invoke finish_call with reason completed. The coordinator says the final thank-you and goodbye. When the reservationist says goodbye or clearly ends the conversation, invoke finish_call with reason participant_goodbye and stop speaking, even if facts are missing. Never invent them.",
+        "organizer" => "Briefly give the confirmed itinerary and ask about pickup. Let the organizer answer fully. Ask about a meeting point only if still needed; do not repeat confirmed facts. Once pickup is confirmed, acknowledge it briefly and invoke request_browser_join exactly once. The coordinator speaks exactly 'One moment while I bring Jonathan into the conversation.', waits for that announcement to finish, then rings his browser. Do not give a separate handoff announcement yourself. After invoking the tool, stop speaking and keep the call open. Jonathan handles the conversation once he joins; never speak for him.",
         _ => "Follow the task for this participant and acknowledge the facts they provide.",
     };
-    let finish_instructions = "If an answering AI, receptionist or voicemail cannot perform this task, ask once whether they can connect you to the intended person. If they cannot, decline further assistance and invoke finish_call with reason unavailable immediately. Do not repeat the task, negotiate with an incapable assistant, trade repeated goodbyes, or claim the task was completed. When someone explicitly ends the conversation, invoke finish_call with reason participant_goodbye. The coordinator speaks one brief thank-you and goodbye; after invoking it remain silent, including if the other assistant responds. Never invoke finish_call during or after a successful Jonathan browser/phone handoff; he controls that call.";
-    let prompt=format!("You are {}, Jonathan's AI travel coordination assistant. This is a conference demonstration; travel booking is sandbox only. You are the caller, speaking with {}. Your call task is background context, not a script to read aloud: {}. {} {} Record the facts they provide. Never claim a booking, SMS, human approval, or other external action occurred unless the supplied context says so. Use only the explicitly supplied tools; do not make independent phone calls. Keep your turns short, friendly, and focused on one question. The first message already introduces you; do not introduce yourself again. Keep the call open when the task says Jonathan will join. The external coordinator controls other communications and call termination through UCTP.",assistant.name,target.name,voice.purpose,role_instructions,finish_instructions);
+    let finish_instructions = "If an answering AI, receptionist or voicemail cannot do the task, ask once whether they can connect you to the intended person. If they cannot, invoke finish_call with reason unavailable immediately. When someone explicitly ends the conversation, invoke finish_call with reason participant_goodbye. The coordinator speaks the goodbye; remain silent after invoking the tool. Never invoke finish_call during or after Jonathan's browser/phone handoff.";
+    let prompt=format!("# Role\nYou are {}, Jonathan's AI travel assistant calling {}. This is a sandbox travel demonstration.\n# Call context (do not recite)\n{}\n# Conversation\n- Speak naturally in one short sentence or question, then pause for the other person. Let them talk more than you do.\n- Ask only about the next missing fact. Do not repeat a question, recap, or confirmation already answered.\n- If interrupted, stop and listen. The opening message already introduced you.\n{}\n# Tools and facts\n{}\n- Record only facts the other person supplies. Never claim a booking, SMS, or approval occurred unless the context says so.\n- Use only the supplied tools; the external UCTP coordinator controls other calls and termination.\n- Keep the organizer call open when Jonathan will join.",assistant.name,target.name,voice.purpose,role_instructions,finish_instructions);
     let mut tools = if target.role == "organizer" {
         json!([{
             "type":"function", "async":true,
@@ -640,12 +643,11 @@ pub async fn attach_vapi(
     }));
     // Saved-assistant overrides merge tools instead of replacing them. Use a
     // transient definition so legacy webhook tools and prompts cannot leak
-    // into this coordinator-owned call. Voice/transcriber use provider defaults
-    // just as the existing saved conference assistant does.
-    let options=VapiCallOptions::new(VapiAssistant::transient(json!({
+    // into this coordinator-owned call.
+    let mut definition = json!({
         "name":"Parley conference David",
-        "model":{"provider":"openai","model":"gpt-4o-mini","messages":[{"role":"system","content":prompt}],"tools":tools},
-        "firstMessage":format!("Hello, I'm {}, Jonathan's AI assistant. Is now a good time?",assistant.name),
+        "model":{"provider":"openai","model":state.config.conference_voice_model,"messages":[{"role":"system","content":prompt}],"tools":tools},
+        "firstMessage":format!("Hi, this is {} calling for Jonathan. Is now a good time?",assistant.name),
         "endCallPhrases":[],
         "endCallFunctionEnabled":false,
         // The organizer waits while the coordinator invites the browser. Keep
@@ -653,8 +655,35 @@ pub async fn attach_vapi(
         "silenceTimeoutSeconds":if target.role == "organizer" { 180 } else { 30 },
         "maxDurationSeconds":600,
         "serverMessages":[],"clientMessages":["transcript","status-update","speech-update","tool-calls"]
-    }))).with_audio_format(VapiAudioFormat::PcmS16Le16Khz).with_name("Parley conference")
-      .with_metadata(json!({"conversation_id":voice.conversation_id,"session_id":voice.session_id,"participant_id":voice.assistant_participant_id,"voice_profile":"conference-voice/2"}));
+    });
+    match state.config.conference_voice_model.as_str() {
+        "gpt-realtime-2" => {
+            // Realtime handles audio natively; Vapi converts the system message
+            // into session instructions. Complete tools through our webhook:
+            // Vapi's async client-only result can arrive after Realtime has
+            // dropped its call ID, ending the call with invalid_tool_call_id.
+            definition["model"]["maxTokens"] = json!(250);
+            definition["voice"] = json!({"provider":"openai","voiceId":"cedar"});
+            let server = json!({
+                "url":format!("{}/v1/vapi/conference-tools/{}/{}",
+                    state.config.public_http_base().trim_end_matches('/'),
+                    voice.session_id,
+                    crate::vapi_tools::conference_tool_signature(&state.config.vapi_api_key,&voice.session_id))
+            });
+            for tool in definition["model"]["tools"]
+                .as_array_mut()
+                .expect("voice tools array")
+            {
+                tool["async"] = json!(false);
+                tool["server"] = server.clone();
+            }
+        }
+        "gpt-4o-mini" => {} // Previous conference voice path for rollback.
+        _ => unreachable!("conference voice model checked before claim"),
+    }
+    let options=VapiCallOptions::new(VapiAssistant::transient(definition))
+      .with_audio_format(VapiAudioFormat::PcmS16Le16Khz).with_name("Parley conference")
+      .with_metadata(json!({"conversation_id":voice.conversation_id,"session_id":voice.session_id,"participant_id":voice.assistant_participant_id,"voice_profile":"conference-voice/3"}));
     let call = match adapter
         .attach_agent_for_participant(
             &state.orchestrator,
@@ -771,7 +800,7 @@ pub async fn attach_vapi(
 
 /// Decode only the zero-argument tool attached to this provider connection.
 /// Model-supplied routing IDs, arbitrary tool names and malformed calls are rejected.
-fn browser_join_tool_calls(payload: &Value) -> Vec<&str> {
+pub(crate) fn browser_join_tool_calls(payload: &Value) -> Vec<&str> {
     payload
         .get("toolCallList")
         .and_then(Value::as_array)
@@ -806,7 +835,7 @@ fn browser_join_tool_calls(payload: &Value) -> Vec<&str> {
 }
 
 /// A provider tool may finish only its attached Session, with a bounded reason.
-fn finish_call_tool_calls(payload: &Value) -> Vec<(&str, String)> {
+pub(crate) fn finish_call_tool_calls(payload: &Value) -> Vec<(&str, String)> {
     payload
         .get("toolCallList")
         .and_then(Value::as_array)

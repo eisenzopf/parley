@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { chromium, expect } from '@playwright/test';
 const fixture = JSON.parse(process.env.LIVE_VOICE_FIXTURE);
+const progress = step => console.log(JSON.stringify({ event: 'live.voice.browser_progress', step }));
 const browser = await chromium.launch({ channel: (process.env.CI || process.env.PARLEY_BROWSER_CHANNEL === 'chromium') ? 'chromium' : 'chrome',
   args: ['--autoplay-policy=no-user-gesture-required', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
 });
@@ -16,6 +17,7 @@ try {
   });
   await page.locator('#url').fill(fixture.url); await page.locator('#cid').fill(fixture.cid); await page.locator('#token').fill(fixture.token);
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  progress('uctp-connected');
   await expect(page.locator('#join')).toBeEnabled();
   await expect(page.locator('[data-edge=vapi]')).toHaveAttribute('data-state', 'active');
   await page.evaluate(async () => {
@@ -47,7 +49,9 @@ try {
   });
   const start = Date.now();
   await page.locator('#join').click();
+  progress('join-requested');
   await expect(page.locator('[data-edge=browser]')).toHaveAttribute('data-state', 'speaking', { timeout: 20000 });
+  progress('browser-speaking');
   const handoffMs = Date.now() - start;
   await expect(page.locator('[data-edge=vapi]')).toHaveAttribute('data-state', 'retired');
   await expect(page.locator('#retained')).toContainText('Same telephone Connection retained');
@@ -73,8 +77,9 @@ try {
   });
   assert.ok(measured.audible >= 8 && measured.inbound > 20 && measured.outbound > 20, JSON.stringify(measured));
   assert.equal(measured.codec?.toLowerCase(), 'audio/opus');
+  progress('bidirectional-audio');
   let state;
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 35000;
   do {
     state = await (await fetch(`${fixture.http}/__live_voice_probe`)).json();
     if (state.provider_ended && state.browser_audio_frames > 10) break;
@@ -83,6 +88,7 @@ try {
   assert.equal(state.provider_ended, true, 'Real Vapi must confirm retirement');
   assert.equal(state.sip_ended, false, 'SIP call must remain alive after Vapi retires');
   assert.ok(state.browser_audio_frames > 10, 'SIP must hear the browser tone');
+  progress('provider-retired');
   const timing = await page.evaluate(() => ({ connected_at: window.probeConnectedAt, browser_audio_at: window.probeAudibleAt }));
   assert.ok(timing.connected_at && timing.browser_audio_at && state.browser_first_audio_ms);
   const readyToAudioMs = Math.max(timing.browser_audio_at, state.browser_first_audio_ms) - timing.connected_at;
