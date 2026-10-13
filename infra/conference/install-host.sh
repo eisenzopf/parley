@@ -70,7 +70,7 @@ $hostname {
   handle @uctp {
     reverse_proxy 127.0.0.1:7443
   }
-  @conference path /conference /conference/* /uctp-client/* /healthz /v1/conference/* /v1/sms/inbound
+  @conference path /conference /conference/* /uctp-client/* /healthz /v1/conference/* /v1/vapi/conference-tools/* /v1/sms/inbound
   handle @conference {
     reverse_proxy 127.0.0.1:8080
   }
